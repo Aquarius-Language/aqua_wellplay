@@ -1,5 +1,6 @@
 # The end-to-end test: starts aqua_wellplay on a temporary folder, runs tests/client against it (JSON-RPC over
-# WebSocket, cells compiled and run by the kernel) and stops the server. Prints WELLPLAY_OK and exits 0 on success.
+# WebSocket, cells compiled and run by the kernel), then tests/examples (every example notebook), and stops the
+# server. Prints WELLPLAY_OK and EXAMPLES_OK and exits 0 on success.
 #   tests/run.ps1 [-Aqua path/to/aqua] [-Port 8901]
 param([string]$Aqua = 'aqua', [int]$Port = 8901)
 $ErrorActionPreference = 'Stop'
@@ -28,6 +29,10 @@ try {
     $output = & $aquaPath run (Join-Path $root 'tests/client') 2>&1 | Out-String
     Write-Host $output
     if (-not $output.Contains('WELLPLAY_OK')) { Get-Content $log -ErrorAction SilentlyContinue; throw 'The end-to-end test failed.' }
+    # Every example notebook runs without an error (the window-opening ones are skipped).
+    $examples = & $aquaPath run (Join-Path $root 'tests/examples') 2>&1 | Out-String
+    Write-Host $examples
+    if (-not $examples.Contains('EXAMPLES_OK')) { throw 'An example failed.' }
 } finally {
     # The server and every cell program it started.
     & taskkill.exe /PID $server.Id /T /F | Out-Null

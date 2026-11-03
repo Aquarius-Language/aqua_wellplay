@@ -19,7 +19,8 @@ with it (Display, 顯示 and its own hook).
 struct WellPlayData { data = {}; metadata = {} }
 struct WellPlayDisplay {
     Show; Update; Clear; Text; Markdown; JSON; Table; Chart; LineChart; BarChart; ScatterChart; AreaChart; Image; Progress; Data;
-    顯示; 更新; 清除; 文字; 表格; 圖表; 折線圖; 長條圖; 散佈圖; 區域圖; 圖片; 進度
+    Sketch; UI;
+    顯示; 更新; 清除; 文字; 表格; 圖表; 折線圖; 長條圖; 散佈圖; 區域圖; 圖片; 進度; 素描; 介面
 }
 struct WellPlayKernel { display; cell; result }
 
@@ -156,11 +157,57 @@ var __wellplayKernel = function(token) {
     # with wait, only when the next output arrives (animations without flicker).
     var Clear = function(wait = false) { return emit({"t": "clear", "wait": wait}); };
 
+    # ---- 圖形 / Graphics ----
+    # Sketch(draw(p, frame), width, height, frames, live)：在這台電腦上執行一個 Processing 素描 frames 個影格，把最後一格
+    # 顯示在儲存格中（像 matplotlib 的 inline）；live > 0 時每 live 格更新一次，成為動畫。 / Run a Processing sketch on
+    # this computer for `frames` frames and show the last one in the cell (like matplotlib inline); with live > 0 the
+    # output updates every `live` frames, an animation.
+    var sketches = 0;
+    var Sketch = function(draw, width = 480, height = 320, frames = 1, live = 0, title = "WellPlay") {
+        var p = import("Processing");
+        var Files = import("Files");
+        sketches++;
+        var id = token + "-sketch-" + String.From(sketches);
+        var file = currWorkingDir + "/.wellplay-" + id + ".png";
+        var frame = 0;
+        var shown = false;
+        p.run(function() { p.size(width, height, p.P2D, title); return null; }, function() {
+            draw(p, frame);
+            frame++;
+            if (live > 0 && frame % live == 0 && frame < frames) {
+                p.save(file);
+                if (shown) { Update(id, Image(file)); } else { Show(Image(file), id); shown = true; }
+            }
+            if (frame >= frames) { p.save(file); p.exit(); }
+            return null;
+        });
+        var picture = Image(file);
+        Files.Delete(Files.Resolve(file));
+        if (shown) { Update(id, picture); return null; }
+        return picture;
+    };
+    # UI(widget, width, height, dark)：SaturnUI 小工具樹的快照。 / A snapshot of a SaturnUI widget tree.
+    var UI = function(widget, width = 480, height = 320, dark = false) {
+        var Saturn = import("Saturn");
+        var SaturnUI = import("SaturnUI");
+        var surface = null;
+        return Sketch(function(p, frame) {
+            if (surface == null) {
+                Saturn.SetTextMeasurer(p.uiTextMetrics);
+                surface = SaturnUI.Surface(width, height, widget, {"theme": SaturnUI.Theme(mode: if (dark) { "dark"; } else { "light"; })});
+            }
+            surface.Frame(p.millis());
+            p.background(0);
+            p.drawUI(surface.Paint());
+            return null;
+        }, width, height, 2);
+    };
+
     var display = WellPlayDisplay(Show: Show, Update: Update, Clear: Clear, Text: Text, Markdown: Markdown, JSON: JSON,
         Table: Table, Chart: Chart, LineChart: LineChart, BarChart: BarChart, ScatterChart: ScatterChart,
-        AreaChart: AreaChart, Image: Image, Progress: Progress, Data: Data,
+        AreaChart: AreaChart, Image: Image, Progress: Progress, Data: Data, Sketch: Sketch, UI: UI,
         顯示: Show, 更新: Update, 清除: Clear, 文字: Text, 表格: Table, 圖表: Chart, 折線圖: LineChart, 長條圖: BarChart,
-        散佈圖: ScatterChart, 區域圖: AreaChart, 圖片: Image, 進度: Progress);
+        散佈圖: ScatterChart, 區域圖: AreaChart, 圖片: Image, 進度: Progress, 素描: Sketch, 介面: UI);
     var cell = function(id) { return emit({"t": "cell", "id": id}); };
     # 儲存格最後一個運算式的值（null 不顯示）。 / A cell's last expression value (null shows nothing).
     var result = function(value) {

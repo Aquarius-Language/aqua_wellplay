@@ -2,6 +2,7 @@
 #   <Output>/aqua_wellplay(.exe)        the server, a standalone executable of this machine's target
 #   <Output>/wellplay/site/             the frontend, exported for the web
 #   <Output>/wellplay/kernel/           the display module every cell program starts with
+#   <Output>/wellplay/examples/         the example gallery (File › Examples)
 #   ./build.ps1 -Aqua path/to/aqua -Output path/to/folder
 # AquariusLangTW's scripts/publish-cli.ps1 runs it with the freshly published aqua. The vendored libraries build from a
 # Bottle cache of their own (in the output's temporary folder), so they never meet other copies of the same versions.
@@ -29,6 +30,7 @@ try {
     Write-Host 'aqua_wellplay: frontend (web)'
     Invoke-Aqua @('build', (Join-Path $root 'frontend'), '--target', 'web', '-o', (Join-Path $wellplay 'site'))
     Copy-Item -LiteralPath (Join-Path $root 'kernel') -Destination (Join-Path $wellplay 'kernel') -Recurse
+    Copy-Item -LiteralPath (Join-Path $root 'examples') -Destination (Join-Path $wellplay 'examples') -Recurse
 
     Write-Host 'aqua_wellplay: server (standalone executable)'
     $target = if ($IsWindows) { 'windows' } elseif ($IsMacOS) { 'macos' } else { 'linux' }

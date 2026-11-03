@@ -22,7 +22,7 @@ var RS = String.FromCode(30);
 # units); after it one line says the rest was dropped.
 var StreamLimit = 400000;
 
-struct Run { requestId; cells; token; process; lineMap; current; started; count; text; dropped; pending; finished; failed; file; carry; errorText }
+struct Run { requestId; cells; token; process; lineMap; current; started; count; text; dropped; pending; finished; failed; file; carry; errorText; reported }
 struct Session { path; directory; history; count; queue; running; subscribers; state }
 struct Kernel { Execute; Interrupt; Restart; Subscribe; Unsubscribe; Status; Shutdown; LastExpression }
 
@@ -212,7 +212,19 @@ var Create = function(options) {
         run.count[run.current] = used + len(text);
         run.text += text;
     };
+    # 出錯（或中斷）時，清掉那時已經排隊的執行，和 Jupyter 一樣；之後送來的照常執行。 / An error (or an interrupt) drops
+    # the executions queued by then, as Jupyter does; later ones run as usual.
+    var abortQueued = function(session) {
+        for (var q = 0; q < len(session.queue); q++) {
+            var cells = session.queue[q]["cells"];
+            for (var c = 0; c < len(cells); c++) { broadcast(session, "kernel/finished", {"cell": cells[c]["id"], "status": "aborted", "milliseconds": 0}); }
+        }
+        session.queue = [];
+        return null;
+    };
     var error = function(session, run, id, name, value, lines) {
+        if (!run.reported) { abortQueued(session); }
+        run.reported = true;
         flushText(session, run);
         output(session, run, id, {"output_type": "error", "ename": name, "evalue": value, "traceback": lines});
     };
@@ -362,7 +374,7 @@ var Create = function(options) {
         Array.Delete(session.queue, 0, 1);
         var run = Run(requestId: request["id"], cells: request["cells"], token: hexOf(Network.RandomBytes(8)), process: null,
             lineMap: [], current: null, started: {}, count: {}, text: "", dropped: [], pending: [], finished: [], failed: false,
-            file: "", carry: "", errorText: "");
+            file: "", carry: "", errorText: "", reported: false);
         session.running = run;
         setState(session, "busy");
         var name = Paths.Name(session.path);
@@ -395,19 +407,19 @@ var Create = function(options) {
             if (run.carry != "") { standardOutput(session, run, NL); }
             reportErrors(session, run);
             var ok = result.ExitCode == 0 && !run.failed;
+            # 失敗卻沒有任何錯誤訊息：至少說出結束代碼與標準錯誤。 / A failure without an error message: say at least the
+            # exit code and standard error.
+            if (!ok && !run.reported) {
+                var id = if (run.current != null && isTarget(run, run.current)) { run.current; } else { run.cells[0]["id"]; };
+                var detail = String.Trim(run.errorText);
+                error(session, run, id, "KernelError", "The program ended with exit code " + String.From(result.ExitCode) + " / 程式結束代碼 " + String.From(result.ExitCode),
+                    if (detail == "") { []; } else { String.Split(detail, NL); });
+            }
             if (run.current != null && isTarget(run, run.current)) { finishCell(session, run, run.current, if (ok) { "ok"; } else { "error"; }); }
             # 沒有執行到的儲存格（前面出錯或被中斷）。 / Cells that never ran (an earlier error or an interrupt).
             for (var i = 0; i < len(run.cells); i++) { finishCell(session, run, run.cells[i]["id"], if (ok) { "ok"; } else { "aborted"; }); }
             Network.Try(() => Files.Delete(Files.Resolve(run.file), false));
             session.running = null;
-            # 出錯時清掉之後排隊的執行（和 Jupyter 一樣）。 / An error drops the queued executions, as Jupyter does.
-            if (!ok) {
-                for (var q = 0; q < len(session.queue); q++) {
-                    var cells = session.queue[q]["cells"];
-                    for (var c = 0; c < len(cells); c++) { broadcast(session, "kernel/finished", {"cell": cells[c]["id"], "status": "aborted", "milliseconds": 0}); }
-                }
-                session.queue = [];
-            }
             setState(session, "idle");
             next(session);
             return null;

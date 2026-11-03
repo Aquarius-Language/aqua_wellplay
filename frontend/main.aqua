@@ -45,6 +45,7 @@ var handleKey = function(e) {
     var name = letter(e);
     if (primary && name == "s") { appModule.Save(app, appModule.ActiveDoc(app)); return true; }
     if (primary && name == "b") { app.sidebar = !app.sidebar; surface.Rebuild(); return true; }
+    if (key == KeyEscape && app.menu != null) { app.menu = null; surface.Rebuild(); return true; }
     var doc = appModule.ActiveDoc(app);
     if (doc == null || app.dialog != null) { return false; }
     var editing = doc.editing != null;
@@ -82,6 +83,9 @@ var handleKey = function(e) {
     if (key == KeyDown || name == "j") { appModule.Select(app, doc, doc.selected + 1); surface.Rebuild(); return true; }
     if (name == "a") { appModule.Insert(app, doc, doc.selected, "code"); surface.Rebuild(); return true; }
     if (name == "b") { appModule.Insert(app, doc, doc.selected + 1, "code"); surface.Rebuild(); return true; }
+    if (name == "x") { appModule.CutCell(app, doc); surface.Rebuild(); return true; }
+    if (name == "c") { appModule.CopyCell(app, doc); surface.Rebuild(); return true; }
+    if (name == "v") { appModule.PasteCell(app, doc); surface.Rebuild(); return true; }
     if (name == "m") { appModule.SetType(app, doc, doc.selected, "markdown"); surface.Rebuild(); return true; }
     if (name == "y") { appModule.SetType(app, doc, doc.selected, "code"); surface.Rebuild(); return true; }
     if (name == "d") { if (again == "d") { appModule.DeleteCell(app, doc, doc.selected); surface.Rebuild(); } else { pendingKey = "d"; } return true; }

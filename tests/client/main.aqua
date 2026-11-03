@@ -108,7 +108,7 @@ check("runtime error", finished["e"] == "error" && textOf("e") == "before" + NL 
 # are skipped.
 await run([{"id": "f1", "source": "print(1);"}, {"id": "f2", "source": "var zero = 0; var q = 1 / zero;"}, {"id": "f3", "source": "print(3);"}]);
 check("run all", finished["f1"] == "ok" && finished["f2"] == "error" && finished["f3"] == "aborted" && textOf("f1") == "1" + NL,
-    Serialization.Json(finished));
+    Serialization.Json(finished) + " " + dump("f1"));
 
 # 可更新的輸出與清除。 / Updatable outputs and clearing.
 await run([{"id": "g", "source": src(["Display.Show(Display.Progress(0, 10, " + Q + "work" + Q + "), " + Q + "p" + Q + ");",

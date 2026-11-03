@@ -13,6 +13,8 @@ server pushes execution state and outputs as notifications (kernel/...).
   notebook/open {path}                 → {notebook, kernel: {state, count, queued, history}}
   notebook/save {path, notebook}       → {ok}
   kernel/execute {path, cells: [{id, source}]}  → {queued}
+  examples/list                        → [{category, title, description, icon, path}]
+  examples/copy {path, folder}         → {path}       a copy of the example in the workspace
   kernel/interrupt {path}, kernel/restart {path}, kernel/sessions
   notifications: kernel/status {path, state, queued, count}, kernel/queued {path, cell}, kernel/started {path, cell,
   count}, kernel/output {path, cell, output}, kernel/update {path, cell, display, output}, kernel/clear {path, cell,
@@ -22,7 +24,7 @@ Outputs are nbformat 4 output objects (stream, display_data, execute_result, err
 var rpc = import("AquaJSONRPC");
 var Paths = import("Paths");
 
-struct Services { workspace; notebooks; kernel; info; log }
+struct Services { workspace; notebooks; kernel; examples; info; log }
 
 var failure = function(result) { return rpc.Error(-32010, result["error"], null); };
 var required = function(params, name) {
@@ -124,6 +126,16 @@ var Register = function(endpoint, services) {
         return {"ok": kernel.Restart(path)};
     });
     endpoint.Handle("kernel/sessions", params => kernel.Status());
+
+    endpoint.Handle("examples/list", params => services.examples.List());
+    endpoint.Handle("examples/copy", function(params) {
+        var path = required(params, "path");
+        if (path == null) { return invalid("path"); }
+        var result = services.examples.Copy(path, Hash.Get(params, "folder", ""));
+        if (!result["ok"]) { return failure(result); }
+        log("example " + path + " → " + result["value"]);
+        return {"path": result["value"]};
+    });
     endpoint.OnClose(reason => kernel.Unsubscribe(endpoint));
     return null;
 };

@@ -5,6 +5,7 @@ The screen: the top bar, the file browser on the left, notebook tabs, cells (edi
 status bar, toasts and dialogs. All SaturnUI widgets built from the app's state (app.aqua).
 ##
 var UI = import("SaturnUI");
+var Saturn = import("Saturn");
 
 struct Modules { app; editors; outputs; theme }
 var M = null;
@@ -40,30 +41,192 @@ var KernelPill = function(app, doc, t) {
     ]);
 };
 
-var TopBar = function(app, t) {
+# ---- 選單列 / The menu bar ----
+# 每個選單是 [標籤, [項目...]]；項目是 [文字, 快捷鍵, 動作, 可用] 或 "-"（分隔線）。動作之後選單關閉。 / Each menu is
+# [label, [items...]]; an item is [text, shortcut, action, enabled] or "-" (a separator). Menus close after an action.
+var MenuSpecs = function(app) {
     var doc = M.app.ActiveDoc(app);
-    var tools = if (doc == null) { null; } else { UI.Row(class: "toolbar", children: [
-        Tool("save", "", () => M.app.Save(app, doc), null, "Save · 儲存 (Ctrl+S)"),
-        Tool("plus", "Code", () => M.app.Insert(app, doc, doc.selected + 1, "code"), null, "Insert a code cell below · 插入程式碼儲存格 (B)"),
-        Tool("text", "Text", () => M.app.Insert(app, doc, doc.selected + 1, "markdown"), null, "Insert a Markdown cell below · 插入文字儲存格"),
-        UI.Box(style: {"width": 1, "height": 20, "background": t.border, "marginHorizontal": 4}),
-        Tool("play", "Run", () => runSelected(app, doc, true), "primary", "Run the cell and select the next · 執行 (Shift+Enter)"),
-        Tool("fastForward", "Run all", () => M.app.Run(app, doc, M.app.RunAll(doc)), null, "Run every cell · 全部執行"),
-        Tool("stop", "", () => M.app.Interrupt(app, doc), "danger", "Interrupt · 中斷 (I, I)"),
-        Tool("refresh", "", () => { app.dialog = {"kind": "restart"}; }, null, "Restart the kernel · 重新啟動核心 (0, 0)"),
-        Tool("close", "", () => M.app.ClearOutputs(app, doc), null, "Clear all outputs · 清除所有輸出"),
-    ]); };
+    var has = doc != null;
+    var online = app.status == "online";
+    var cells = if (has) { doc.notebook["cells"]; } else { []; };
+    var selected = if (has) { doc.selected; } else { 0; };
+    var range = (from, to) => { var r = []; for (var i = from; i < to; i++) { Array.Append(r, i); } return r; };
+    return [
+        ["File 檔案", [
+            ["New notebook · 新筆記本", "", () => M.app.NewNotebook(app), online],
+            ["New folder… · 新資料夾", "", () => { app.dialog = {"kind": "folder", "value": ""}; }, online],
+            "-",
+            ["Examples… · 範例", "", () => M.app.OpenGallery(app), online],
+            ["Launcher · 啟動頁", "", () => { app.active = -1; }, true],
+            "-",
+            ["Save · 儲存", "Ctrl+S", () => M.app.Save(app, doc), has],
+            ["Save all · 全部儲存", "", () => M.app.SaveAll(app), len(app.docs) > 0],
+            ["Rename notebook… · 重新命名", "", () => { app.dialog = {"kind": "rename", "path": doc.path, "value": doc.name}; }, has],
+            "-",
+            ["Close tab · 關閉分頁", "", () => M.app.Close(app, app.active), has],
+            ["Close all tabs · 關閉全部", "", () => M.app.CloseAll(app), len(app.docs) > 0],
+            ["Refresh files · 重新整理檔案", "", () => M.app.ListFiles(app, app.dir), online],
+        ]],
+        ["Edit 編輯", [
+            ["Cut cell · 剪下儲存格", "X", () => M.app.CutCell(app, doc), has],
+            ["Copy cell · 複製儲存格", "C", () => M.app.CopyCell(app, doc), has],
+            ["Paste cell below · 貼在下方", "V", () => M.app.PasteCell(app, doc), has && app.clipboard != null],
+            ["Duplicate cell · 複製一份", "", () => { M.app.CopyCell(app, doc); M.app.PasteCell(app, doc); }, has],
+            ["Delete cell · 刪除儲存格", "D, D", () => M.app.DeleteCell(app, doc, selected), has],
+            "-",
+            ["Insert code above · 上方插入程式碼", "A", () => M.app.Insert(app, doc, selected, "code"), has],
+            ["Insert code below · 下方插入程式碼", "B", () => M.app.Insert(app, doc, selected + 1, "code"), has],
+            ["Insert Markdown below · 下方插入文字", "", () => M.app.Insert(app, doc, selected + 1, "markdown"), has],
+            ["Move cell up · 上移", "", () => M.app.Move(app, doc, selected, -1), has],
+            ["Move cell down · 下移", "", () => M.app.Move(app, doc, selected, 1), has],
+            "-",
+            ["To code · 轉為程式碼", "Y", () => M.app.SetType(app, doc, selected, "code"), has],
+            ["To Markdown · 轉為文字", "M", () => M.app.SetType(app, doc, selected, "markdown"), has],
+            ["Clear cell output · 清除輸出", "", () => M.app.ClearOutputs(app, doc, selected), has],
+            ["Clear all outputs · 清除所有輸出", "", () => M.app.ClearOutputs(app, doc), has],
+        ]],
+        ["View 檢視", [
+            [if (app.sidebar) { "Hide file browser · 隱藏檔案"; } else { "Show file browser · 顯示檔案"; }, "Ctrl+B", () => { app.sidebar = !app.sidebar; }, true],
+            [if (app.dark) { "Light theme · 淺色主題"; } else { "Dark theme · 深色主題"; }, "", () => M.app.ToggleTheme(app), true],
+            "-",
+            ["Example gallery · 範例集", "", () => M.app.OpenGallery(app), online],
+        ]],
+        ["Run 執行", [
+            ["Run cell and advance · 執行並前往下一格", "Shift+Enter", () => runSelected(app, doc, true), has],
+            ["Run cell · 執行", "Ctrl+Enter", () => M.app.Run(app, doc, [selected]), has],
+            ["Run cell and insert below · 執行並插入", "Alt+Enter", () => { M.app.Run(app, doc, [selected]); M.app.Insert(app, doc, selected + 1, "code"); }, has],
+            "-",
+            ["Run all cells · 全部執行", "", () => M.app.Run(app, doc, M.app.RunAll(doc)), has],
+            ["Run all above · 執行上方全部", "", () => M.app.Run(app, doc, range(0, selected)), has],
+            ["Run selected and below · 執行此格與下方", "", () => M.app.Run(app, doc, range(selected, len(cells))), has],
+        ]],
+        ["Kernel 核心", [
+            ["Interrupt · 中斷", "I, I", () => M.app.Interrupt(app, doc), has],
+            ["Restart… · 重新啟動", "0, 0", () => { app.dialog = {"kind": "restart"}; }, has],
+            ["Restart and clear outputs · 重新啟動並清除輸出", "", () => { M.app.Restart(app, doc); M.app.ClearOutputs(app, doc); }, has],
+            ["Restart and run all · 重新啟動並全部執行", "", () => M.app.RestartAndRunAll(app, doc), has],
+        ]],
+        ["Help 說明", [
+            ["Keyboard shortcuts · 快捷鍵", "", () => { app.dialog = {"kind": "shortcuts"}; }, true],
+            ["Display API · 顯示 API", "", () => { app.dialog = {"kind": "display"}; }, true],
+            ["Welcome tour · 導覽", "", () => M.app.OpenExample(app, "01 Warm-Up Spells/Welcome Aboard the Wellship.ipynb"), online],
+            "-",
+            ["About WellPlay · 關於", "", () => { app.dialog = {"kind": "about"}; }, true],
+        ]],
+    ];
+};
+
+# 選單從它的標題下方打開（標題在上一次排版的位置）。 / A menu opens under its title (where the last layout put it).
+var menuX = function(app, name) {
+    var found = findKeyed(app.surface.tree, name);
+    if (found == null) { return 120; }
+    return found.node.GetAbsoluteLayout()["x"];
+};
+var findKeyed = function(e, key) {
+    if (e.widget != null && e.type == "Box" && e.widget.key == key) { return e; }
+    for (var i = 0; i < len(e.children); i++) {
+        var found = findKeyed(e.children[i], key);
+        if (found != null) { return found; }
+    }
+    return null;
+};
+var MenuBar = function(app, t, specs) {
+    var titles = [];
+    for (var i = 0; i < len(specs); i++) {
+        var name = specs[i][0];
+        Array.Append(titles, UI.Box(class: if (app.menu == name) { "menuTitle open"; } else { "menuTitle"; }, key: name,
+            onPress: e => { app.menu = if (app.menu == name) { null; } else { name; }; },
+            onHover: inside => { if (inside && app.menu != null && app.menu != name) { app.menu = name; } },
+            child: UI.Text(name)));
+    }
+    return UI.Row(gap: 2, crossAxis: "center", children: titles);
+};
+var MenuDropdown = function(app, t, specs) {
+    if (app.menu == null) { return null; }
+    var index = -1;
+    for (var i = 0; i < len(specs); i++) { if (specs[i][0] == app.menu) { index = i; } }
+    if (index < 0) { return null; }
+    var rows = [];
+    var items = specs[index][1];
+    for (var i = 0; i < len(items); i++) {
+        var item = items[i];
+        if (typeOf(item) == "string") { Array.Append(rows, UI.Box(class: "menuRule")); continue; }
+        var enabled = item[3] == true;
+        var action = item[2];
+        Array.Append(rows, UI.Box(class: if (enabled) { "menuItem"; } else { "menuItem disabled"; }, key: item[0],
+            onTap: () => { if (enabled) { app.menu = null; action(); } },
+            children: [UI.Expanded(child: UI.Text(item[0], maxLines: 1)), if (item[1] != "") UI.Text(item[1], class: "menuKey")]));
+    }
+    return [
+        # 點選單外的任何地方關閉選單。 / A tap anywhere outside closes the menu.
+        UI.Positioned(left: 0, top: 0, right: 0, bottom: 0, child: UI.Box(style: {"flexGrow": 1}, onPress: e => { app.menu = null; })),
+        UI.Positioned(left: menuX(app, app.menu), top: 46, child: UI.Column(class: "menu", crossAxis: "stretch", children: rows)),
+    ];
+};
+
+var TopBar = function(app, t, specs) {
+    var doc = M.app.ActiveDoc(app);
     return UI.Row(class: "topbar", children: [
         tip("Files · 檔案 (Ctrl+B)", UI.Box(class: "tool", onTap: () => { app.sidebar = !app.sidebar; }, child: icon("menu", 17))),
         UI.Box(class: "brandMark", child: UI.Text("W", style: {"color": "#ffffff", "fontWeight": 900, "fontSize": 16})),
-        UI.Column(gap: 0, children: [UI.Text("WellPlay", class: "brand"), UI.Text("AquariusLang notebooks · 星泉筆記本", class: "brandSub")]),
-        UI.Box(style: {"width": 12}),
-        tools,
+        UI.Text("WellPlay", class: "brand"),
+        MenuBar(app, t, specs),
         UI.Spacer(),
         KernelPill(app, doc, t),
         tip(if (app.dark) { "Light theme · 淺色"; } else { "Dark theme · 深色"; },
             UI.Box(class: "tool", onTap: () => M.app.ToggleTheme(app), child: icon(if (app.dark) { "sun"; } else { "moon"; }, 17))),
     ]);
+};
+
+# 筆記本上方的工具列。 / The toolbar above a notebook.
+var NotebookToolbar = function(app, doc, t) {
+    return UI.Row(class: "nbToolbar", children: [
+        UI.Row(class: "toolbar", children: [
+            Tool("save", "", () => M.app.Save(app, doc), null, "Save · 儲存 (Ctrl+S)"),
+            Tool("plus", "Code", () => M.app.Insert(app, doc, doc.selected + 1, "code"), null, "Insert a code cell below · 插入程式碼儲存格 (B)"),
+            Tool("text", "Text", () => M.app.Insert(app, doc, doc.selected + 1, "markdown"), null, "Insert a Markdown cell below · 插入文字儲存格"),
+            UI.Box(style: {"width": 1, "height": 20, "background": t.border, "marginHorizontal": 4}),
+            Tool("play", "Run", () => runSelected(app, doc, true), "primary", "Run the cell and select the next · 執行 (Shift+Enter)"),
+            Tool("fastForward", "Run all", () => M.app.Run(app, doc, M.app.RunAll(doc)), null, "Run every cell · 全部執行"),
+            Tool("stop", "", () => M.app.Interrupt(app, doc), "danger", "Interrupt · 中斷 (I, I)"),
+            Tool("refresh", "", () => { app.dialog = {"kind": "restart"}; }, null, "Restart the kernel · 重新啟動核心 (0, 0)"),
+            Tool("close", "", () => M.app.ClearOutputs(app, doc), null, "Clear all outputs · 清除所有輸出"),
+        ]),
+        UI.Spacer(),
+        UI.Text(doc.path, style: {"fontSize": 12, "color": t.faint}),
+    ]);
+};
+
+# ---- 範例集 / The example gallery ----
+var Gallery = function(app, t) {
+    var examples = if (app.examples == null) { []; } else { app.examples; };
+    var groups = [];
+    var seen = {};
+    for (var i = 0; i < len(examples); i++) {
+        var c = examples[i]["category"];
+        if (seen[c] == null) { seen[c] = []; Array.Append(groups, c); }
+        Array.Append(seen[c], examples[i]);
+    }
+    var card = example => UI.Box(class: "exampleCard", key: example["path"], onTap: () => M.app.OpenExample(app, example["path"]), children: [
+        UI.Row(gap: 10, crossAxis: "center", children: [
+            UI.Box(class: "launchIcon", style: {"width": 34, "height": 34, "borderRadius": 10}, child: icon(example["icon"], 17, [255, 255, 255, 255])),
+            UI.Expanded(child: UI.Text(example["title"], style: {"fontWeight": 700, "fontSize": 15}, maxLines: 2)),
+        ]),
+        UI.Text(example["description"], style: {"fontSize": 12, "lineHeight": 1.45d, "color": t.muted}, maxLines: 3, ellipsis: true),
+        if (example["interactive"]) UI.Text("Opens a window on this computer · 會在這台電腦開啟視窗", style: {"fontSize": 11, "color": t.accent}),
+    ]);
+    return UI.ScrollView(style: {"flexGrow": 1, "flexBasis": 0}, child: UI.Column(crossAxis: "stretch", style: {"padding": 28, "gap": 18}, children: [
+        UI.Column(gap: 6, children: [
+            UI.Text("Example gallery 範例集", class: "heroTitle", style: {"fontSize": 30}),
+            UI.Text("Pick a notebook: a copy opens in " + (if (app.dir == "") { "this folder"; } else { app.dir; }) + ", ready to run with Run all. 選一本筆記本，複製後即可執行。",
+                style: {"fontSize": 14, "color": t.muted}),
+        ]),
+        if (app.examples == null) UI.Text("Loading examples… 載入中", style: {"color": t.faint}),
+        ...Array.Map(groups, g => UI.Column(gap: 10, crossAxis: "stretch", children: [
+            UI.Text(g, style: {"fontSize": 16, "fontWeight": 800, "color": t.primary}),
+            UI.Row(gap: 12, wrap: true, children: Array.Map(seen[g], card)),
+        ])),
+    ]));
 };
 
 # ---- 檔案 / Files ----
@@ -140,7 +303,9 @@ var Tabs = function(app, t) {
     }
     var home = UI.Box(class: if (app.active < 0) { "tab active"; } else { "tab"; }, key: "launcher", onTap: () => { app.active = -1; },
         children: [icon("home", 14), UI.Text("Launcher")]);
-    return UI.Row(class: "tabs", children: [home, ...tabs]);
+    var gallery = if (app.galleryOpen) { UI.Box(class: if (app.active == -2) { "tab active"; } else { "tab"; }, key: "gallery", onTap: () => { app.active = -2; },
+        children: [icon("star", 14), UI.Text("Examples"), UI.Box(class: "tabClose", onTap: () => { app.galleryOpen = false; if (app.active == -2) { app.active = -1; } }, child: icon("close", 11))]); } else { null; };
+    return UI.Row(class: "tabs", children: [home, gallery, ...tabs]);
 };
 
 # ---- 儲存格 / Cells ----
@@ -248,6 +413,7 @@ var Launcher = function(app, t) {
         ]),
         UI.Row(class: "launchGrid", children: [
             LaunchCard("notebook", "New notebook", "Start an empty notebook in " + (if (app.dir == "") { "this folder"; } else { app.dir; }) + ". 新增筆記本。", () => M.app.NewNotebook(app)),
+            LaunchCard("star", "Example gallery", "Graphics, UI, async and number fun, ready to run. 範例集：圖形、介面、非同步與數學。", () => M.app.OpenGallery(app)),
             ...Array.Map(Array.Slice(notebooks, 0, if (len(notebooks) > 5) { 5; } else { len(notebooks); }),
                 entry => LaunchCard("play", entry["name"], "Open this notebook · 開啟筆記本", () => M.app.Open(app, entry["path"]))),
         ]),
@@ -300,23 +466,53 @@ var Dialog = function(app, t) {
         title = "Delete · 刪除";
         content = UI.Text("Delete " + d["value"] + " permanently? 永久刪除？");
         action = UI.Button("Delete", variant: "danger", onPress: () => { M.app.Delete(app, d["path"]); app.dialog = null; });
+    } elif (kind == "shortcuts") {
+        title = "Keyboard shortcuts · 快捷鍵";
+        var keys = [["Shift+Enter", "Run the cell, select the next"], ["Ctrl+Enter", "Run the cell"], ["Alt+Enter", "Run, insert a cell below"],
+            ["Esc / Enter", "Command mode / edit mode"], ["↑ ↓ (K J)", "Select cells (command mode)"], ["A / B", "Insert above / below"],
+            ["X / C / V", "Cut / copy / paste cells"], ["D, D", "Delete the cell"], ["M / Y", "Markdown / code"], ["I, I / 0, 0", "Interrupt / restart"],
+            ["Ctrl+S", "Save"], ["Ctrl+B", "File browser"], ["Ctrl+Space", "Suggestions in the editor"]];
+        content = UI.Column(gap: 6, children: [for (var i = 0; i < len(keys); i++) UI.Row(gap: 12, crossAxis: "center", children: [
+            UI.Box(style: {"width": 120}, child: UI.Text(keys[i][0], class: "kbd")), UI.Text(keys[i][1], style: {"fontSize": 13})])]);
+    } elif (kind == "display") {
+        title = "Display API · 顯示 API";
+        content = UI.Box(style: {"maxWidth": 560}, child: M.outputs.Markdown(String.Join([
+            "- `Display.Show(value, id)` shows a value; an `id` makes it updatable with `Display.Update(id, value)`.",
+            "- `Display.Markdown(text)`, `Display.Table(rows)`, `Display.JSON(value)`, `Display.Text(text)`",
+            "- `Display.LineChart / BarChart / AreaChart / ScatterChart(series, title:, labels:, height:)`",
+            "- `Display.Image(path | image | bytes, width)`, `Display.Progress(value, maximum, label)`",
+            "- `Display.Sketch((p, frame) => ..., width, height, frames:, live:)` draws with Processing, inline.",
+            "- `Display.UI(widget, width, height, dark:)` shows a SaturnUI snapshot.",
+            "- `Display.Clear(wait)` clears the cell's outputs. A cell's last expression shows as `Out[n]`.",
+        ], String.FromCode(10)), t));
+    } elif (kind == "about") {
+        title = "About WellPlay · 關於";
+        var version = if (app.info == null) { "?"; } else { app.info["version"]; };
+        content = UI.Column(gap: 8, children: [
+            UI.Text("WellPlay " + version + " · AquariusLang notebooks 星泉筆記本", style: {"fontWeight": 700}),
+            UI.Text("The page is an AquariusLang app (SaturnUI, built for the web); cells run on the computer serving it.", style: {"fontSize": 13}),
+            UI.Text("Server: " + if (app.info == null) { "?"; } else { app.info["root"]; }, style: {"fontSize": 12, "color": t.muted}),
+        ]);
     } elif (kind == "restart") {
         title = "Restart the kernel · 重新啟動核心";
         content = UI.Text("Variables from earlier cells are forgotten; outputs stay. 先前儲存格的變數會被清除，輸出保留。");
         var doc = M.app.ActiveDoc(app);
         action = UI.Button("Restart", onPress: () => { if (doc != null) { M.app.Restart(app, doc); } app.dialog = null; });
     }
-    return UI.Dialog(open: true, title: title, content: content, onDismiss: close, actions: [UI.Button("Cancel", variant: "text", onPress: close), action]);
+    var actions = if (action == null) { [UI.Button("Close", variant: "text", onPress: close)]; } else { [UI.Button("Cancel", variant: "text", onPress: close), action]; };
+    return UI.Dialog(open: true, title: title, content: content, onDismiss: close, actions: actions, width: 600);
 };
 
 # ---- 根 / The root ----
 var Root = function(app) {
     var t = M.app.Palette(app);
     var doc = M.app.ActiveDoc(app);
-    var page = if (doc == null) { Launcher(app, t); } else { Notebook(app, doc, t); };
+    var specs = MenuSpecs(app);
+    var page = if (app.active == -2) { Gallery(app, t); } elif (doc == null) { Launcher(app, t); }
+        else { UI.Column(crossAxis: "stretch", style: {"flexGrow": 1, "minHeight": 0}, children: [NotebookToolbar(app, doc, t), Notebook(app, doc, t)]); };
     return UI.Stack(style: {"flexGrow": 1}, children: [
         UI.Column(class: "app", crossAxis: "stretch", style: {"position": "absolute", "left": 0, "top": 0, "right": 0, "bottom": 0}, children: [
-            TopBar(app, t),
+            TopBar(app, t, specs),
             UI.Row(crossAxis: "stretch", style: {"flexGrow": 1, "flexShrink": 1, "flexBasis": 0, "minHeight": 0}, children: [
                 if (app.sidebar) Sidebar(app, t),
                 UI.Column(crossAxis: "stretch", style: {"flexGrow": 1, "flexShrink": 1, "flexBasis": 0, "minWidth": 0, "minHeight": 0}, children: [
@@ -326,10 +522,12 @@ var Root = function(app) {
             ]),
             StatusBar(app, t),
         ]),
+        ...listOf(MenuDropdown(app, t, specs)),
         Toast(app, t),
         Dialog(app, t),
     ]);
 };
+var listOf = value => if (value == null) { []; } else { value; };
 
 # ---- 鍵盤焦點 / Keyboard focus ----
 # 找到某個儲存格的編輯器元素，讓它取得焦點（編輯模式）。 / Find a cell's editor element and focus it (edit mode).

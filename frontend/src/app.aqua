@@ -12,7 +12,7 @@ var Storage = import("Storage");
 struct Doc { path; name; notebook; dirty; selected; editing; markdownEditing; editors; status; durations; kernel; savedAt; changedAt; pendingClear }
 struct App {
     endpoint; status; info; dir; files; docs; active; dark; sidebar; toast; toastAt; toastKind; dialog; surface;
-    editors; theme; rebuild; pendingD; scrollTo
+    editors; theme; rebuild; pendingD; scrollTo; menu; examples; galleryOpen; clipboard
 }
 
 var NL = String.FromCode(10);
@@ -23,7 +23,7 @@ var Create = function(editors, theme) {
     if (dark == null) { dark = import("Interaction").Conventions().darkMode; }
     return App(endpoint: null, status: "connecting", info: null, dir: "", files: [], docs: [], active: -1, dark: dark == true,
         sidebar: true, toast: null, toastAt: 0, toastKind: "info", dialog: null, surface: null, editors: editors, theme: theme,
-        rebuild: null, pendingD: 0, scrollTo: null);
+        rebuild: null, pendingD: 0, scrollTo: null, menu: null, examples: null, galleryOpen: false, clipboard: null);
 };
 
 var Toast = function(app, text, kind = "info") {
@@ -234,10 +234,54 @@ var SetType = function(app, doc, index, type) {
     touch(doc);
     return null;
 };
-var ClearOutputs = function(app, doc) {
+# 清除輸出：一個儲存格（index）或全部。 / Clear the outputs of one cell (index) or of all.
+var ClearOutputs = function(app, doc, index = -1) {
     var cells = doc.notebook["cells"];
-    for (var i = 0; i < len(cells); i++) { if (cells[i]["cell_type"] == "code") { cells[i]["outputs"] = []; cells[i]["execution_count"] = null; } }
+    for (var i = 0; i < len(cells); i++) {
+        if ((index < 0 || i == index) && cells[i]["cell_type"] == "code") { cells[i]["outputs"] = []; cells[i]["execution_count"] = null; }
+    }
     touch(doc);
+    return null;
+};
+# 儲存格的剪貼簿（剪下、複製、貼上）。 / The cell clipboard (cut, copy, paste).
+var CopyCell = function(app, doc) {
+    var cell = doc.notebook["cells"][doc.selected];
+    app.clipboard = {"cell_type": cell["cell_type"], "source": cell["source"]};
+    Toast(app, "Copied the cell · 已複製儲存格");
+    return null;
+};
+var CutCell = function(app, doc) { CopyCell(app, doc); DeleteCell(app, doc, doc.selected); return null; };
+var PasteCell = function(app, doc) {
+    if (app.clipboard == null) { return null; }
+    var cell = Insert(app, doc, doc.selected + 1, app.clipboard["cell_type"]);
+    cell["source"] = app.clipboard["source"];
+    doc.markdownEditing = Array.Filter(doc.markdownEditing, id => id != cell["id"]);
+    return null;
+};
+var SaveAll = function(app) { for (var i = 0; i < len(app.docs); i++) { Save(app, app.docs[i]); } return null; };
+var CloseAll = function(app) { for (; len(app.docs) > 0;) { Close(app, 0); } app.active = -1; return null; };
+var RestartAndRunAll = async function(app, doc) {
+    await Restart(app, doc);
+    await Run(app, doc, RunAll(doc));
+    return null;
+};
+# ---- 範例 / Examples ----
+var OpenGallery = async function(app) {
+    app.galleryOpen = true;
+    app.active = -2;
+    if (app.examples == null && app.endpoint != null) {
+        app.examples = await app.endpoint.Call("examples/list", {}).Catch(failed(app, "Cannot list examples"));
+    }
+    if (app.surface != null) { app.surface.Rebuild(); }
+    return null;
+};
+# 範例複製到目前的資料夾後開啟。 / An example is copied into the current folder, then opened.
+var OpenExample = async function(app, path) {
+    var copied = await app.endpoint.Call("examples/copy", {"path": path, "folder": app.dir}).Catch(failed(app, "Cannot open the example"));
+    if (copied == null) { return null; }
+    await ListFiles(app, app.dir);
+    await Open(app, copied["path"]);
+    Toast(app, "Copied " + nameOf(copied["path"]) + " · Run all to start 全部執行即可開始");
     return null;
 };
 

@@ -17,6 +17,7 @@ var workspaces = import("workspace.aqua");
 var notebooks = import("notebooks.aqua");
 var kernels = import("kernel.aqua");
 var protocol = import("protocol.aqua");
+var exampleSets = import("examples.aqua");
 
 var Version = "0.1.0";
 var log = function(text) { print("[WellPlay] " + text); return null; };
@@ -81,6 +82,11 @@ var findSite = function() {
     if (settings["site"] != null) { return settings["site"]; }
     var candidates = [home + "/wellplay/site", home + "/frontend/dist"];
     for (var i = 0; i < len(candidates); i++) { if (exists(candidates[i] + "/index.html")) { return candidates[i]; } }
+    return null;
+};
+var findExamples = function() {
+    var candidates = [home + "/wellplay/examples", home + "/examples"];
+    for (var i = 0; i < len(candidates); i++) { if (exists(candidates[i])) { return candidates[i]; } }
     return null;
 };
 var findKernel = function() {
@@ -154,6 +160,7 @@ var serve = function() {
     });
 
     var services = protocol.Services(workspace: workspace, notebooks: notebooks, kernel: kernel, log: log,
+        examples: exampleSets.Create(findExamples(), workspace),
         info: {"name": "aqua_wellplay", "version": Version, "root": workspace.root, "rootName": Paths.Name(workspace.root),
             "platform": Terminal.Platform, "aqua": aqua});
     rpc.ServeWebSocket(server, "/rpc", function(endpoint, request) {

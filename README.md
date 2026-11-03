@@ -12,6 +12,8 @@ aqua_wellplay                          # the current folder, http://127.0.0.1:88
 aqua_wellplay D:\notes --port 9000     # another folder and port
 aqua_wellplay D:\notes\Report.ipynb    # a notebook, opened in its folder
 aqua_wellplay --help
+aqua well D:
+otes                     # the same through aqua: aqua well ... runs aqua_wellplay ...
 ```
 
 It ships beside `aqua` in the AquariusLang package, so the package folder on `PATH` gives both commands.
@@ -28,6 +30,18 @@ It ships beside `aqua` in the AquariusLang package, so the package folder on `PA
   (ends the process tree), Restart. Output streams while a cell runs; Run all stops at the first error, like Jupyter.
 - **Rich output**: a cell's last expression shows as `Out[n]`; `Display` (also `顯示`) shows Markdown, tables, line /
   bar / area / scatter charts, images, JSON and progress, and an output given an id updates in place.
+- **Menu bar**: File (new notebook or folder, **Examples…**, save, rename, close), Edit (cut, copy, paste, duplicate,
+  delete, insert and move cells, change their type, clear outputs), View (file browser, theme, gallery), Run (run and
+  advance, run all, run above, run below), Kernel (interrupt, restart, restart and clear, restart and run all), Help
+  (shortcuts, the Display API, the welcome tour, about).
+- **Examples**: File › Examples opens a gallery of ready-to-run notebooks in seven groups: Warm-Up Spells (Prime
+  Hunters' Almanac, Collatz Rollercoaster, Struct Menagerie, Bitwise Bakery, Word Alchemist), Number Lab (Monte Carlo
+  Dartboard, Random Walk Weather Station, Golden Ratio Treasure Hunt, Sorting Hat Race), Async & Network (Async Coffee
+  Bar, Tiny Web Server in a Teacup, JSON Time Capsule), Canvas Studio (Neon Orbit Postcard, Lissajous Light Show,
+  Mandelbrot Snow Globe, Particle Fountain, Bouncing Comet Window), Saturn UI Workshop (Mission Control Dashboard,
+  Pocket Counter App, Theme Swatch Gallery), Immediate-Mode Arcade (ImGui Control Room, Clay Magazine Cover) and
+  Playground Classics (Game of Life Lava Lamp, Maze Weaver, Fortune Cookie Compiler). Opening one copies it into the
+  current folder.
 - **Interface**: a file browser (create, rename, delete notebooks and folders), tabs, a launcher, light and dark themes
   (the system's by default), Jupyter's command-mode keys (`A`, `B`, `D D`, `M`, `Y`, `↑`/`↓`, `I I`, `0 0`), autosave.
 
@@ -48,6 +62,11 @@ Display.Image("plot.png", 320);                                       # a file n
 | `LineChart` / `折線圖`, `BarChart` / `長條圖`, `AreaChart` / `區域圖`, `ScatterChart` / `散佈圖` `(series, title:, labels:, height:)`, `Chart(spec)` / `圖表` | series: numbers, `{"name": numbers}`, or `[{"name", "values" \| "points": [[x, y]]}]` |
 | `Image(path \| image \| bytes, width?)` / `圖片` | PNG, JPEG or GIF files, Images module images, encoded bytes |
 | `Progress(value, maximum?, label?)` / `進度` | a progress bar (with an id, update it as work advances) |
+| `Sketch(draw(p, frame), width, height, frames:, live:)` / `素描` | runs a Processing sketch on this computer for `frames` frames and shows the last one inline; `live: n` updates the output every n frames (an inline animation) |
+| `UI(widget, width, height, dark:)` / `介面` | a snapshot of a SaturnUI widget tree (any `drawUI` list works through `Sketch`: ImGui, Clay) |
+
+Interactive programs (`p.run(...)`, `UI.RunApp(...)`) open a real window on the computer running the server; the
+cell runs until the window closes or you press Stop.
 
 ## How it works
 
@@ -88,6 +107,7 @@ Display.Image("plot.png", 320);                                       # a file n
 | `files/list {path}`, `files/read {path}`, `files/save {path, text}`, `files/create {path, kind}`, `files/rename {from, to}`, `files/delete {path}` | entries `{name, path, kind: directory \| notebook \| script \| file, size, modified}`; paths are relative to the served folder and cannot leave it |
 | `notebook/open {path}`, `notebook/save {path, notebook}` | the normalized notebook and the kernel's state |
 | `kernel/execute {path, cells: [{id, source}]}`, `kernel/interrupt {path}`, `kernel/restart {path}`, `kernel/sessions` | |
+| `examples/list`, `examples/copy {path, folder}` | `[{category, title, description, icon, interactive, path}]`; a copy of the example in the folder |
 
 Notifications: `kernel/status`, `kernel/queued`, `kernel/started {cell, count}`, `kernel/output {cell, output}`,
 `kernel/update {display, output}`, `kernel/clear {cell, wait}`, `kernel/finished {cell, status: ok | error | aborted,
@@ -104,7 +124,7 @@ frontend/                   the web app: main.aqua (window, input, shortcuts), s
                             actions), src/views.aqua (screens), src/editors.aqua (cell editors), src/outputs.aqua
                             (renderers, Markdown, charts), src/theme.aqua (palettes, style sheet)
 libraries/                  vendored copies of Aqua_Embedded_LSP_Editor and Aqua_JSON-RPC (see libraries/README.md)
-examples/Welcome.ipynb      a tour of every output
+examples/<NN Group>/        the example gallery (examples/README.md: how to add one)
 tests/                      run.ps1 + client/: the end-to-end test against a running server
 build.ps1, build.sh         build into a package folder (the AquariusLang release runs them)
 ```
@@ -119,8 +139,17 @@ builds it: `scripts/publish-cli.ps1` runs `build.ps1 -Aqua <published aqua> -Out
 ./build.ps1 -Aqua path/to/aqua -Output path/to/folder      # Linux: ./build.sh path/to/aqua path/to/folder
 aqua build frontend --target web -o frontend/dist          # development: the server finds frontend/dist and kernel/
 aqua run . D:\notes --no-browser                           # the server from the sources
-./tests/run.ps1 -Aqua path/to/aqua                         # end to end: prints WELLPLAY_OK
+./tests/run.ps1 -Aqua path/to/aqua                         # end to end: WELLPLAY_OK, then every example: EXAMPLES_OK
 ```
+
+### Staying in sync with AquariusLang
+
+Nothing here is copied from AquariusLang: the server and the frontend build with the default libraries (Network,
+Terminal, SaturnUI, ImGui, Clay, Processing...) of the `aqua` that builds them, and the AquariusLang release builds
+this folder with the aqua it just published and runs `tests/run.ps1` against it. The superproject pins one commit of
+this repository; updating WellPlay is `git submodule update --remote tools/aqua_wellplay` plus a commit there, and a
+change to the language or a library that breaks WellPlay fails the release that introduces it. The only copies are
+the two libraries in `libraries/` (they are not part of AquariusLang; see libraries/README.md).
 
 Development builds use the vendored libraries through Bottle; when you change one, raise its version (or remove its
 cached copy with `aqua bottle cache remove <name> <version>`), because the cache keeps one immutable copy per version.

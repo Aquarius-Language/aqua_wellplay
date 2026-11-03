@@ -1,0 +1,49 @@
+##
+範例測試：把每個範例複製到伺服器的資料夾、執行全部程式碼儲存格（開視窗的互動範例除外），任何錯誤輸出都算失敗。
+成功時印出 EXAMPLES_OK。 / The example test: copies every example into the server's folder and runs all its code cells
+(except interactive ones that open windows); any error output fails. Prints EXAMPLES_OK on success.
+##
+var rpc = import("AquaJSONRPC");
+var Application = import("Application");
+var Serialization = import("Serialization");
+
+var url = Application.Environment("WELLPLAY_URL");
+if (url == null) { url = "ws://127.0.0.1:8901/rpc?token=t0k"; }
+var endpoint = await rpc.ConnectWebSocketAsync(url, {"timeout": 8000});
+var finished = {};
+var errors = {};
+var outputs = 0;
+endpoint.OnNotification("kernel/finished", params => { finished[params["cell"]] = params["status"]; return null; });
+endpoint.OnNotification("kernel/output", function(params) {
+    var output = params["output"];
+    outputs++;
+    if (output["output_type"] == "error" || (output["output_type"] == "stream" && output["name"] == "stderr")) {
+        errors[params["cell"]] = Hash.Get(output, "evalue", Hash.Get(output, "text", "?"));
+    }
+    return null;
+});
+
+var examples = await endpoint.Call("examples/list", {});
+var failures = 0;
+print("examples", len(examples));
+for (var e = 0; e < len(examples); e++) {
+    var example = examples[e];
+    if (example["interactive"]) { print("SKIP", example["path"], "(opens a window)"); continue; }
+    var copied = await endpoint.Call("examples/copy", {"path": example["path"], "folder": ""});
+    var opened = await endpoint.Call("notebook/open", {"path": copied["path"]});
+    var cells = Array.Filter(opened["notebook"]["cells"], c => c["cell_type"] == "code");
+    finished = {};
+    errors = {};
+    outputs = 0;
+    await endpoint.Call("kernel/execute", {"path": copied["path"], "cells": Array.Map(cells, c => ({"id": c["id"], "source": c["source"]}))});
+    var started = currentTime();
+    for (; len(finished) < len(cells) && currentTime() - started < 180000;) { await Promise.Delay(100); }
+    var bad = Array.Filter(Hash.Keys(finished), id => finished[id] != "ok");
+    # 每個範例至少要顯示一個輸出。 / Every example shows at least one output.
+    if (len(bad) == 0 && len(errors) == 0 && len(finished) == len(cells) && outputs > 0) { print("PASS", example["path"], String.From(int(currentTime() - started)) + " ms"); }
+    else { failures++; print("FAIL", example["path"], Serialization.Json(finished), Serialization.Json(errors), outputs, "outputs"); }
+    await endpoint.Call("files/delete", {"path": copied["path"]});
+}
+endpoint.Close();
+if (failures == 0) { print("EXAMPLES_OK"); } else { print("FAILURES", failures); }
+var done = true;

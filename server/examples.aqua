@@ -1,0 +1,63 @@
+##
+範例：examples/ 資料夾中的筆記本，依子資料夾分類（名稱開頭的數字決定順序）。每個筆記本的 metadata.wellplay 有 title、
+description 與 icon。開啟範例時複製一份到使用者的資料夾，原本的範例不會被改動。
+Examples: the notebooks in the examples folder, grouped by subfolder (a leading number orders the groups). Each
+notebook's metadata.wellplay gives its title, description and icon. Opening one copies it into the user's folder, so
+the example itself never changes.
+##
+var Files = import("Files");
+var Paths = import("Paths");
+var Serialization = import("Serialization");
+var Network = import("Network");
+
+struct Examples { root; List; Copy }
+
+# "01 Warm-Up Spells" → "Warm-Up Spells"
+var titleOf = function(folder) {
+    var parts = String.Split(folder, " ");
+    if (len(parts) > 1 && String.ParseInt(parts[0]) != null) { return String.Join(Array.Slice(parts, 1, len(parts)), " "); }
+    return folder;
+};
+
+var Create = function(root, workspace) {
+    var list = function() {
+        if (root == null || !Files.Stat(Files.Resolve(root)).exists) { return []; }
+        var result = [];
+        var groups = Array.Sort(Array.Map(Array.Filter(Files.Enumerate(Files.Resolve(root)), r => Files.Stat(r).kind == 1), r => r.name));
+        for (var g = 0; g < len(groups); g++) {
+            var files = Array.Sort(Array.Map(Files.Enumerate(Files.Resolve(root + "/" + groups[g])), r => r.name));
+            var group = [];
+            for (var f = 0; f < len(files); f++) {
+                if (!String.EndsWith(String.Lower(files[f]), ".ipynb")) { continue; }
+                var path = groups[g] + "/" + files[f];
+                var meta = {};
+                var parsed = Network.Try(() => Serialization.ParseJson(Files.ReadText(Files.Resolve(root + "/" + path), "utf-8")));
+                if (parsed.Success && typeOf(parsed.Value) == "hash") {
+                    meta = Hash.Get(Hash.Get(parsed.Value, "metadata", {}), "wellplay", {});
+                }
+                Array.Append(group, {"category": titleOf(groups[g]), "path": path, "order": Hash.Get(meta, "order", 50),
+                    "title": Hash.Get(meta, "title", String.Replace(files[f], ".ipynb", "")),
+                    "description": Hash.Get(meta, "description", ""), "icon": Hash.Get(meta, "icon", "notebook"),
+                    "interactive": Hash.Get(meta, "interactive", false) == true});
+            }
+            # metadata.wellplay.order 排在前面（預設 50），其餘依名稱。 / metadata.wellplay.order first (50 by default), then names.
+            Array.Sort(group, (a, b) => a["order"] - b["order"]);
+            Array.AppendArray(result, group);
+        }
+        return result;
+    };
+    # 複製到工作區的 folder，名稱已被使用時加上數字。 / Copy into the workspace's folder, numbering the name when it is taken.
+    var copy = function(path, folder) {
+        if (root == null || String.Contains(path, "..")) { return {"ok": false, "error": "Unknown example / 沒有這個範例"}; }
+        var source = Files.Resolve(root + "/" + path);
+        if (!Files.Stat(source).exists) { return {"ok": false, "error": "Unknown example / 沒有這個範例"}; }
+        var base = String.Replace(Paths.Name(path), ".ipynb", "");
+        var prefix = if (folder == "") { ""; } else { folder + "/"; };
+        var target = prefix + base + ".ipynb";
+        for (var n = 2; workspace.Exists(target); n++) { target = prefix + base + " " + String.From(n) + ".ipynb"; }
+        var saved = workspace.Save(target, Files.ReadText(source, "utf-8"));
+        if (!saved["ok"]) { return saved; }
+        return {"ok": true, "value": target};
+    };
+    return Examples(root: root, List: list, Copy: copy);
+};
