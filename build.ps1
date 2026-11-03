@@ -29,8 +29,10 @@ function Invoke-Aqua([string[]]$Arguments) {
     if ($LASTEXITCODE -ne 0) { throw "aqua $($Arguments -join ' ') failed (exit $LASTEXITCODE)." }
 }
 try {
-    # Locks are machine-specific (the Bottle cache holds the sources); build from the sources every time.
-    Get-ChildItem -LiteralPath $root -Recurse -Filter aqua.lock.json -File | Remove-Item -Force
+    # Locks are machine-specific (the Bottle cache holds the sources); build from the sources every time. Only this
+    # repository's own locks: the library submodules keep theirs.
+    $locks = @((Join-Path $root 'aqua.lock.json'), (Join-Path $root 'frontend/aqua.lock.json'))
+    $locks | Where-Object { Test-Path -LiteralPath $_ } | Remove-Item -Force
     $wellplay = Join-Path $Output 'wellplay'
     if (Test-Path -LiteralPath $wellplay) { Remove-Item -LiteralPath $wellplay -Recurse -Force }
     New-Item -ItemType Directory -Path $wellplay | Out-Null
@@ -51,6 +53,6 @@ try {
     Write-Host "aqua_wellplay: $(Join-Path $Output $name)"
 } finally {
     $env:AQUA_BOTTLE_HOME = $savedBottles
-    Get-ChildItem -LiteralPath $root -Recurse -Filter aqua.lock.json -File | Remove-Item -Force
+    $locks | Where-Object { Test-Path -LiteralPath $_ } | Remove-Item -Force
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }

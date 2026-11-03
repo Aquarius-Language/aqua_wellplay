@@ -18,7 +18,8 @@ var eventOf = h => ix.Event(h);
 struct CellEditor { id; editor; painter; width; focused; onChange; lastText; popup }
 
 var style = {"fontFamily": "monospace", "fontSize": 13};
-var measure = text => Saturn.MeasureText(text, style)["width"];
+# 量的是字元前進寬度（游標放在這裡），不是保留給版面的方框。 / The advance (where a caret goes), not the box layout reserves.
+var measure = text => Saturn.MeasureText(text, style)["advance"];
 var lineHeight = 20;
 var padding = 6;
 
