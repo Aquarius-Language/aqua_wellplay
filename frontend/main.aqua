@@ -147,9 +147,11 @@ var frame = function() {
 
 # 連線與視窗同時開始。 / The connection starts alongside the window.
 appModule.Connect(app).Catch(error => appModule.Toast(app, "Cannot connect · 無法連線: " + String.From(error), "error"));
+# 每個影格同步執行（Saturn.Contain 不會暫停，不留等待中的工作）。 / Each frame runs synchronously (Saturn.Contain never
+# pauses and leaves no pending task behind).
 var draw = function() {
-    var drawn = Network.Try(frame);
-    if (!drawn.Success) { report(drawn.Error.Message); }
+    var drawn = Saturn.Contain(frame);
+    if (!drawn["Success"]) { report(drawn["Message"]); }
     return null;
 };
 

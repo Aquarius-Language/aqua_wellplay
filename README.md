@@ -28,6 +28,8 @@ It ships beside `aqua` in the AquariusLang package, so the package folder on `PA
   selection, clipboard, context menu).
 - **Running**: `Shift+Enter` (run and move on), `Ctrl+Enter` (run), `Alt+Enter` (run and insert), Run all, Stop
   (ends the process tree), Restart. Output streams while a cell runs; Run all stops at the first error, like Jupyter.
+  Shift+Enter on the last cell adds an empty one to type into next, which shows a hint ("Type code here") in place of
+  a lone line number.
 - **Rich output**: a cell's last expression shows as `Out[n]`; `Display` (also `顯示`) shows Markdown, tables, line /
   bar / area / scatter charts, images, JSON and progress, and an output given an id updates in place.
 - **Menu bar**: File (new notebook or folder, **Examples…**, save, rename, close), Edit (cut, copy, paste, duplicate,

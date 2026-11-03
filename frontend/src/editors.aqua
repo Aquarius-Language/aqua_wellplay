@@ -37,6 +37,7 @@ var painterOf = function(p) {
 
 var Create = function(id, text, theme, onChange) {
     var editor = ed.CreateEditor({"text": text, "lineHeight": lineHeight, "measure": measure, "theme": theme,
+        "placeholder": "Type code here · 在此輸入程式碼",
         "uri": "inmemory://wellplay/" + id + ".aqua", "tabSize": 4});
     ed.SetFocus(editor, false);
     var cell = CellEditor(id: id, editor: editor, painter: Saturn.Painter(), width: 400, focused: false, onChange: onChange,

@@ -386,11 +386,14 @@ var Bundle = function(data, metadata, t, width) {
     return UI.Text("[" + String.Join(Hash.Keys(data), ", ") + "]", style: {"color": t.faint});
 };
 
-# 一個 nbformat 輸出；繪製失敗只影響這一個輸出。 / One nbformat output; a renderer that fails affects only it.
+# 一個 nbformat 輸出；繪製失敗只影響這一個輸出。建構介面時用同步的 Saturn.Contain（非同步的 Network.Try 會在每次
+# 重建留下等待中的工作，耗盡原生資源）。 / One nbformat output; a renderer that fails affects only it. Building the
+# interface uses the synchronous Saturn.Contain (the asynchronous Network.Try left a pending task behind on every
+# rebuild, exhausting the native resources).
 var Output = function(output, t, width) {
-    var shown = import("Network").Try(() => render(output, t, width));
-    if (shown.Success) { return shown.Value; }
-    return UI.Text("Cannot show this output · 無法顯示這個輸出: " + shown.Error.Message, class: "stderr");
+    var shown = Saturn.Contain(() => render(output, t, width));
+    if (shown["Success"]) { return shown["Value"]; }
+    return UI.Text("Cannot show this output · 無法顯示這個輸出: " + shown["Message"], class: "stderr");
 };
 var render = function(output, t, width) {
     var type = output["output_type"];

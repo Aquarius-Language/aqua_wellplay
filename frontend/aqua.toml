@@ -10,4 +10,4 @@ platforms = ["web"]
 
 [dependencies]
 Aqua_JSON-RPC = { path = "../libraries/Aqua_JSON-RPC", version = "1.0.0" }
-Aqua_Embedded_LSP_Editor = { path = "../libraries/Aqua_Embedded_LSP_Editor", version = "1.2.1" }
+Aqua_Embedded_LSP_Editor = { path = "../libraries/Aqua_Embedded_LSP_Editor", version = "1.2.2" }
