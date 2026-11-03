@@ -1,0 +1,7 @@
+# Build output
+frontend/dist/
+build/
+# aqua run temporaries and Bottle locks of the vendored path dependencies
+.aquarius-run-*.wasm
+.wellplay-*.aqua
+aqua.lock.json

@@ -1,0 +1,173 @@
+##
+WellPlay 顯示模組：每個儲存格程式的開頭（伺服器把這份原始碼放在儲存格之前一起編譯）。提供 `Display` / `顯示`，以 MIME
+套組送出豐富輸出（Markdown、表格、圖表、JSON、圖片、進度），格式與 Jupyter 的 display_data 相同。
+The WellPlay display module: the start of every cell program (the server compiles this source in front of the cells).
+It gives cells `Display` / `顯示`, which sends rich outputs as MIME bundles (Markdown, tables, charts, JSON, images,
+progress), the same shape as Jupyter's display_data.
+
+協定 / Protocol: one line on standard output per message, the record separator (U+001E), the run's token, then JSON:
+  {"t": "display", "data": {mime: value}, "metadata": {}, "id": id | null}    display_data (id: an updatable output)
+  {"t": "update", "data": ..., "metadata": ..., "id": id}                      update_display_data
+  {"t": "result", "data": ..., "metadata": {}}                                 execute_result (a cell's last value)
+  {"t": "clear", "wait": bool}                                                 clear_output
+  {"t": "cell", "id": cellId}                                                  the cells after this line are cellId's
+Everything else on standard output is the cell's text; `ERROR: ...` ends the program (a runtime error).
+
+Only the names below the kernel function are global: the two structs, __wellplayKernel, and what the server declares
+with it (Display, 顯示 and its own hook).
+##
+struct WellPlayData { data = {}; metadata = {} }
+struct WellPlayDisplay {
+    Show; Update; Clear; Text; Markdown; JSON; Table; Chart; LineChart; BarChart; ScatterChart; AreaChart; Image; Progress; Data;
+    顯示; 更新; 清除; 文字; 表格; 圖表; 折線圖; 長條圖; 散佈圖; 區域圖; 圖片; 進度
+}
+struct WellPlayKernel { display; cell; result }
+
+var __wellplayKernel = function(token) {
+    var String = import("String");
+    var Array = import("Array");
+    var Hash = import("Hash");
+    var Serialization = import("Serialization");
+    var prefix = String.FromCode(30) + token;
+    var NL = String.FromCode(10);
+
+    var emit = function(message) { print(prefix + Serialization.Json(message)); return null; };
+
+    # 任何值的 MIME 套組。 / The MIME bundle of any value.
+    var bundle = function(value) {
+        if (typeOf(value) == "WellPlayData") { return value; }
+        return WellPlayData(data: {"text/plain": String.From(value)});
+    };
+
+    # ---- 建立豐富資料 / Making rich data ----
+    var Data = function(data, metadata = {}) { return WellPlayData(data: data, metadata: metadata); };
+    var Text = function(text) { return WellPlayData(data: {"text/plain": String.From(text)}); };
+    var Markdown = function(text) { return WellPlayData(data: {"text/markdown": text, "text/plain": text}); };
+    var JSON = function(value) {
+        return WellPlayData(data: {"application/json": value, "text/plain": Serialization.Json(value)});
+    };
+
+    # rows：陣列的陣列，或雜湊表的陣列（欄位取自鍵）。 / rows: arrays, or hashes (their keys make the columns).
+    var Table = function(rows, columns = null) {
+        var header = columns;
+        var cells = [];
+        if (header == null) {
+            header = [];
+            for (var i = 0; i < len(rows); i++) {
+                if (typeOf(rows[i]) == "hash") {
+                    var keys = Hash.Keys(rows[i]);
+                    for (var k = 0; k < len(keys); k++) { if (!Array.Contains(header, keys[k])) { Array.Append(header, keys[k]); } }
+                }
+            }
+            if (len(header) == 0 && len(rows) > 0) {
+                for (var c = 0; c < len(rows[0]); c++) { Array.Append(header, String.From(c)); }
+            }
+        }
+        for (var i = 0; i < len(rows); i++) {
+            var row = rows[i];
+            var line = [];
+            for (var c = 0; c < len(header); c++) {
+                var v = if (typeOf(row) == "hash") { row[header[c]]; } else { row[c]; };
+                Array.Append(line, v);
+            }
+            Array.Append(cells, line);
+        }
+        var plain = [String.Join(Array.Map(header, x => String.From(x)), "  ")];
+        for (var i = 0; i < len(cells); i++) { Array.Append(plain, String.Join(Array.Map(cells[i], x => String.From(x)), "  ")); }
+        return WellPlayData(data: {"application/vnd.wellplay.table+json": {"columns": header, "rows": cells},
+            "text/plain": String.Join(plain, NL)});
+    };
+
+    # 序列：數字陣列、{"名稱": 數字陣列}，或 {"name", "values" | "points"} 的陣列。 / Series: an array of numbers,
+    # {"name": numbers}, or an array of {"name", "values" | "points"}.
+    var seriesOf = function(values) {
+        if (typeOf(values) == "hash") {
+            var keys = Hash.Keys(values);
+            return Array.Map(keys, k => ({"name": String.From(k), "values": values[k]}));
+        }
+        if (len(values) > 0 && typeOf(values[0]) == "hash") { return values; }
+        return [{"name": "", "values": values}];
+    };
+    var Chart = function(spec) {
+        var title = Hash.Get(spec, "title", "");
+        return WellPlayData(data: {"application/vnd.wellplay.chart+json": spec,
+            "text/plain": "<" + Hash.Get(spec, "kind", "line") + " chart" + (if (title == "") { ""; } else { ": " + title; }) + ">"});
+    };
+    # options：title、labels（x 軸標籤）、xLabel、yLabel。 / options: title, labels (x axis), xLabel, yLabel.
+    var chartOf = function(kind, series, options) {
+        var spec = {"kind": kind, "series": seriesOf(series)};
+        var keys = Hash.Keys(options);
+        for (var i = 0; i < len(keys); i++) { spec[keys[i]] = options[keys[i]]; }
+        return Chart(spec);
+    };
+    var LineChart = function(series, options = {}) { return chartOf("line", series, options); };
+    var BarChart = function(series, options = {}) { return chartOf("bar", series, options); };
+    var ScatterChart = function(series, options = {}) { return chartOf("scatter", series, options); };
+    var AreaChart = function(series, options = {}) { return chartOf("area", series, options); };
+
+    var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var base64 = function(bytes) {
+        var parts = [];
+        var n = len(bytes);
+        for (var i = 0; i < n; i += 3) {
+            var b1 = if (i + 1 < n) { bytes[i + 1]; } else { 0; };
+            var b2 = if (i + 2 < n) { bytes[i + 2]; } else { 0; };
+            var v = (bytes[i] << 16) | (b1 << 8) | b2;
+            var c3 = if (i + 1 < n) { alphabet[(v >> 6) & 63]; } else { "="; };
+            var c4 = if (i + 2 < n) { alphabet[v & 63]; } else { "="; };
+            Array.Append(parts, alphabet[(v >> 18) & 63] + alphabet[(v >> 12) & 63] + c3 + c4);
+        }
+        return String.Join(parts, "");
+    };
+    # 圖片：檔案路徑（PNG、JPEG、GIF）、Images 模組的圖片，或位元組陣列。 / An image: a file path (PNG, JPEG, GIF), an
+    # Images module image, or a byte array.
+    var Image = function(source, width = null) {
+        var mime = "image/png";
+        var bytes = source;
+        if (typeOf(source) == "string") {
+            var Files = import("Files");
+            var lower = String.Lower(source);
+            if (String.EndsWith(lower, ".jpg") || String.EndsWith(lower, ".jpeg")) { mime = "image/jpeg"; }
+            if (String.EndsWith(lower, ".gif")) { mime = "image/gif"; }
+            bytes = Files.ReadBytes(Files.Resolve(source));
+        } elif (typeOf(source) != "array") {
+            bytes = import("Images").Encode(source, "png", {});
+        }
+        var metadata = {};
+        if (width != null) { metadata = {mime: {"width": width}}; }
+        return WellPlayData(data: {mime: base64(bytes), "text/plain": "<image>"}, metadata: metadata);
+    };
+    var Progress = function(value, maximum = 1.0d, label = "") {
+        var fraction = if (maximum == 0) { 0.0d; } else { double(value) / maximum; };
+        return WellPlayData(data: {"application/vnd.wellplay.progress+json": {"value": fraction, "label": label},
+            "text/plain": label + " " + String.From(int(fraction * 100)) + "%"});
+    };
+
+    # ---- 送出 / Sending ----
+    # Show(值, id)：顯示一個輸出；有 id 時之後可用 Update 原地更新。 / Show a value; with an id, Update replaces it in place.
+    var Show = function(value, id = null) {
+        var b = bundle(value);
+        return emit({"t": "display", "data": b.data, "metadata": b.metadata, "id": id});
+    };
+    var Update = function(id, value) {
+        var b = bundle(value);
+        return emit({"t": "update", "data": b.data, "metadata": b.metadata, "id": id});
+    };
+    # Clear(wait)：清除這個儲存格的輸出；wait 為真時等到下一個輸出才清除（動畫不閃爍）。 / Clear this cell's outputs;
+    # with wait, only when the next output arrives (animations without flicker).
+    var Clear = function(wait = false) { return emit({"t": "clear", "wait": wait}); };
+
+    var display = WellPlayDisplay(Show: Show, Update: Update, Clear: Clear, Text: Text, Markdown: Markdown, JSON: JSON,
+        Table: Table, Chart: Chart, LineChart: LineChart, BarChart: BarChart, ScatterChart: ScatterChart,
+        AreaChart: AreaChart, Image: Image, Progress: Progress, Data: Data,
+        顯示: Show, 更新: Update, 清除: Clear, 文字: Text, 表格: Table, 圖表: Chart, 折線圖: LineChart, 長條圖: BarChart,
+        散佈圖: ScatterChart, 區域圖: AreaChart, 圖片: Image, 進度: Progress);
+    var cell = function(id) { return emit({"t": "cell", "id": id}); };
+    # 儲存格最後一個運算式的值（null 不顯示）。 / A cell's last expression value (null shows nothing).
+    var result = function(value) {
+        if (value == null) { return null; }
+        var b = bundle(value);
+        return emit({"t": "result", "data": b.data, "metadata": b.metadata});
+    };
+    return WellPlayKernel(display: display, cell: cell, result: result);
+};

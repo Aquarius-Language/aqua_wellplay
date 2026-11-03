@@ -1,0 +1,61 @@
+# 傳輸（桌面、Android）：HTTP、WebSocket 與 TCP（Content-Length 分框）上的同一組方法。結尾為 JSONRPC_TRANSPORTS_OK。
+# Transports (desktop, Android): the same methods over HTTP, WebSocket and TCP (Content-Length). Ends with
+# JSONRPC_TRANSPORTS_OK.
+var rpc = import("AquaJSONRPC");
+var net = import("Network");
+var json = import("Serialization");
+var failures = [];
+var check = function(name, actual, expected) {
+    if (json.Json(actual) != json.Json(expected)) { 陣列.追加(failures, name); print("FAIL", name, actual, "!=", expected); }
+};
+var api = function(endpoint) {
+    endpoint.Handle("add", function(params) { return params["a"] + params["b"]; });
+    endpoint.Handle("upper", async function(params) { await 承諾.延遲(1); return 字串.轉大寫(params[0]); });
+    return endpoint;
+};
+
+var server = net.Listen("127.0.0.1:0");
+var http = 字串.取代(server.Address, "ws:", "http:");
+rpc.ServeHttp(server, "/rpc", api(rpc.CreateEndpoint(null)));
+var events = [];
+rpc.ServeWebSocket(server, "/ws", function(endpoint, request) {
+    api(endpoint);
+    # 伺服器也能主動呼叫或通知用戶端。 / The server may call or notify the client too.
+    endpoint.OnNotification("hello", function(params) { endpoint.Notify("welcome", {"to": params["name"]}); });
+});
+var serving = server.ServeAsync();
+
+# HTTP
+var client = rpc.HttpClient(http + "/rpc", null);
+check("http call", await client.Call("add", {"a": 2, "b": 40}), 42);
+check("http async", await client.Call("upper", ["aqua"]), "AQUA");
+check("http batch", await client.Batch([["add", {"a": 1, "b": 1}], ["missing", null]]), [{"result": 2}, {"error": {"code": -32601, "message": "Method not found", "data": {"method": "missing"}}}]);
+client.Notify("ignored", null);
+var get = await net.GetAsync(http + "/rpc", null);
+check("http get", get.Status, 405);
+var down = rpc.HttpClient("http://127.0.0.1:1/rpc", {"timeout": 2000});
+check("http unreachable", await down.Call("add", {"a": 1, "b": 2}).Catch(function(error) { return error["code"]; }), -32002);
+
+# WebSocket
+var ws = await rpc.ConnectWebSocketAsync("ws" + 字串.切片(http, 4, 長度(http)) + "/ws", null);
+ws.OnNotification("welcome", function(params) { 陣列.追加(events, params["to"]); });
+check("ws call", await ws.Call("add", {"a": 5, "b": 6}), 11);
+ws.Notify("hello", {"name": "星泉"});
+for (var i = 0; i < 200 && len(events) == 0; i++) { await 承諾.延遲(5); }
+check("ws server notification", events, ["星泉"]);
+
+# TCP（與 LSP 相同的分框） / TCP (LSP's framing)
+var listener = rpc.ServeTCP("127.0.0.1", 0, function(endpoint, stream) { api(endpoint); });
+var port = net.ParseURL("tcp://" + listener.LocalAddress).Port;
+var tcp = await rpc.ConnectTCPAsync("127.0.0.1", port);
+check("tcp call", await tcp.Call("add", {"a": 100, "b": 23}), 123);
+check("tcp unicode", await tcp.Call("upper", ["星泉 aqua"]), "星泉 AQUA");
+var many = [];
+for (var i = 0; i < 20; i++) { 陣列.追加(many, tcp.Call("add", {"a": i, "b": i})); }
+check("tcp concurrent", 陣列.總和(await 承諾.全部(many)), 380);
+
+ws.Close();
+tcp.Close();
+listener.Close();
+server.Close();
+if (len(failures) == 0) { print("JSONRPC_TRANSPORTS_OK"); } else { print("JSONRPC_TRANSPORTS_FAIL", failures); }

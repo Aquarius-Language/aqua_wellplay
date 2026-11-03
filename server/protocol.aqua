@@ -1,0 +1,129 @@
+##
+前端與伺服器之間的 JSON-RPC 2.0 方法（WebSocket 上的 /rpc）。請求由前端送出；伺服器以通知（kernel/...）推送執行狀態與輸出。
+The JSON-RPC 2.0 methods between the frontend and the server (WebSocket at /rpc). The frontend sends requests; the
+server pushes execution state and outputs as notifications (kernel/...).
+
+  wellplay/info                        → {name, version, root, rootName, platform}
+  files/list {path}                    → [{name, path, kind, size, modified}]  kind: directory | notebook | script | file
+  files/read {path}                    → {text}
+  files/save {path, text}              → {ok}
+  files/create {path, kind}            → {path}       kind: directory | notebook | file
+  files/rename {from, to}              → {path}
+  files/delete {path}                  → {ok}
+  notebook/open {path}                 → {notebook, kernel: {state, count, queued, history}}
+  notebook/save {path, notebook}       → {ok}
+  kernel/execute {path, cells: [{id, source}]}  → {queued}
+  kernel/interrupt {path}, kernel/restart {path}, kernel/sessions
+  notifications: kernel/status {path, state, queued, count}, kernel/queued {path, cell}, kernel/started {path, cell,
+  count}, kernel/output {path, cell, output}, kernel/update {path, cell, display, output}, kernel/clear {path, cell,
+  wait}, kernel/finished {path, cell, status: ok | error | aborted, milliseconds}, kernel/restarted {path}
+Outputs are nbformat 4 output objects (stream, display_data, execute_result, error).
+##
+var rpc = import("AquaJSONRPC");
+var Paths = import("Paths");
+
+struct Services { workspace; notebooks; kernel; info; log }
+
+var failure = function(result) { return rpc.Error(-32010, result["error"], null); };
+var required = function(params, name) {
+    if (params == null || typeOf(params) != "hash" || typeOf(params[name]) != "string") { return null; }
+    return params[name];
+};
+
+var Register = function(endpoint, services) {
+    var workspace = services.workspace;
+    var notebooks = services.notebooks;
+    var kernel = services.kernel;
+    var log = services.log;
+    var invalid = name => rpc.InvalidParamsError("Missing " + name + " / 缺少 " + name);
+
+    endpoint.Handle("wellplay/info", params => services.info);
+
+    endpoint.Handle("files/list", function(params) {
+        var path = Hash.Get(if (params == null) { {}; } else { params; }, "path", "");
+        var result = workspace.List(path);
+        if (!result["ok"]) { return failure(result); }
+        return result["value"];
+    });
+    endpoint.Handle("files/read", function(params) {
+        var path = required(params, "path");
+        if (path == null) { return invalid("path"); }
+        var result = workspace.Read(path);
+        if (!result["ok"]) { return failure(result); }
+        return {"text": result["value"]};
+    });
+    endpoint.Handle("files/save", function(params) {
+        var path = required(params, "path");
+        if (path == null || typeOf(params["text"]) != "string") { return invalid("path, text"); }
+        var result = workspace.Save(path, params["text"]);
+        if (!result["ok"]) { return failure(result); }
+        return {"ok": true};
+    });
+    endpoint.Handle("files/create", function(params) {
+        var path = required(params, "path");
+        if (path == null) { return invalid("path"); }
+        var kind = Hash.Get(params, "kind", "file");
+        var text = if (kind == "notebook") { notebooks.Format(notebooks.Empty()); } else { ""; };
+        var result = workspace.Create(path, if (kind == "directory") { "directory"; } else { "file"; }, text);
+        if (!result["ok"]) { return failure(result); }
+        log("created " + path);
+        return {"path": path};
+    });
+    endpoint.Handle("files/rename", function(params) {
+        var from = required(params, "from");
+        var to = required(params, "to");
+        if (from == null || to == null) { return invalid("from, to"); }
+        var result = workspace.Rename(from, to);
+        if (!result["ok"]) { return failure(result); }
+        log("renamed " + from + " → " + to);
+        return {"path": to};
+    });
+    endpoint.Handle("files/delete", function(params) {
+        var path = required(params, "path");
+        if (path == null) { return invalid("path"); }
+        var result = workspace.Delete(path);
+        if (!result["ok"]) { return failure(result); }
+        log("deleted " + path);
+        return {"ok": true};
+    });
+
+    endpoint.Handle("notebook/open", function(params) {
+        var path = required(params, "path");
+        if (path == null) { return invalid("path"); }
+        var read = workspace.Read(path);
+        if (!read["ok"]) { return failure(read); }
+        var notebook = notebooks.Parse(read["value"]);
+        if (notebook == null) { return rpc.Error(-32011, "Not a notebook (nbformat 4 JSON) / 不是筆記本檔案", null); }
+        return {"notebook": notebook, "kernel": kernel.Subscribe(path, endpoint)};
+    });
+    endpoint.Handle("notebook/save", function(params) {
+        var path = required(params, "path");
+        if (path == null || typeOf(params["notebook"]) != "hash") { return invalid("path, notebook"); }
+        var result = workspace.Save(path, notebooks.Format(params["notebook"]));
+        if (!result["ok"]) { return failure(result); }
+        return {"ok": true};
+    });
+
+    endpoint.Handle("kernel/execute", function(params) {
+        var path = required(params, "path");
+        if (path == null || typeOf(params["cells"]) != "array") { return invalid("path, cells"); }
+        if (!workspace.Exists(path)) { return rpc.Error(-32012, "Save the notebook first / 請先儲存筆記本", null); }
+        kernel.Subscribe(path, endpoint);
+        var cells = Array.Map(params["cells"], c => ({"id": String.From(c["id"]), "source": String.From(Hash.Get(c, "source", ""))}));
+        return kernel.Execute(path, cells);
+    });
+    endpoint.Handle("kernel/interrupt", function(params) {
+        var path = required(params, "path");
+        if (path == null) { return invalid("path"); }
+        return {"interrupted": kernel.Interrupt(path)};
+    });
+    endpoint.Handle("kernel/restart", function(params) {
+        var path = required(params, "path");
+        if (path == null) { return invalid("path"); }
+        log("restart " + path);
+        return {"ok": kernel.Restart(path)};
+    });
+    endpoint.Handle("kernel/sessions", params => kernel.Status());
+    endpoint.OnClose(reason => kernel.Unsubscribe(endpoint));
+    return null;
+};

@@ -1,0 +1,400 @@
+##
+內建的 AquariusLang 語言伺服器（以星泉撰寫）：在任何 JSON-RPC 端點上提供 LSP 的 initialize、文件同步（完整與增量）、
+completion、hover、signatureHelp、documentSymbol 與 publishDiagnostics。不需要外部程式，所以網頁與 Android 也能用；
+桌面可以改連官方的 AquariusLanguageServer 取得編譯器的完整診斷。
+The built-in AquariusLang language server, written in AquariusLang: LSP initialize, document sync (full and
+incremental), completion, hover, signatureHelp, documentSymbol and publishDiagnostics on any JSON-RPC endpoint. It
+needs no external program, so it also works on the web and Android.
+##
+var String = import("String");
+var Array = import("Array");
+var Hash = import("Hash");
+var language = null;
+var highlight = null;
+var buffers = null;
+var Initialize = function(languageModule, highlightModule, bufferModule) {
+    language = languageModule; highlight = highlightModule; buffers = bufferModule;
+};
+
+# LSP 的列舉值。 / LSP enumeration values.
+var KindText = 1; var KindMethod = 2; var KindFunction = 3; var KindField = 5; var KindVariable = 6;
+var KindModule = 9; var KindKeyword = 14; var KindSnippet = 15; var KindConstant = 21;
+var SeverityError = 1; var SeverityWarning = 2;
+
+var _range = function(line, start, end) {
+    return {"start": {"line": line, "character": start}, "end": {"line": line, "character": end}};
+};
+
+# ---- 診斷 / Diagnostics ----
+var _operandStarts = ["identifier", "builtin", "module", "function", "string", "number", "constant", "keyword"];
+
+# 括號配對、未結束的字串與註解，以及在同步函式中的 等待。 / Brackets, unterminated strings and comments, and await
+# inside synchronous functions.
+var Diagnose = function(lines) {
+    var result = [];
+    var tokenLines = highlight.Tokenize(lines);
+    var stack = [];               # [字元, 行, 欄, 種類("async"|"sync"|"block")]
+    var pendingFunction = "";     # 下一個 { 屬於哪種函式 / what the next { opens
+    var previousKeyword = "";
+    for (var l = 0; l < len(tokenLines); l++) {
+        var tokens = tokenLines[l];
+        for (var t = 0; t < len(tokens); t++) {
+            var token = tokens[t];
+            var kind = token[2];
+            var text = String.Slice(lines[l], token[0], token[1]);
+            if (kind == "keyword") {
+                if (text == "function" || text == "函式") {
+                    if (previousKeyword == "async" || previousKeyword == "非同步") { pendingFunction = "async"; } else { pendingFunction = "sync"; }
+                }
+                if ((text == "await" || text == "等待") && t + 1 < len(tokens) && Array.Contains(_operandStarts, tokens[t + 1][2])) {
+                    var inside = "";
+                    for (var s = len(stack) - 1; s >= 0 && inside == ""; s -= 1) { if (stack[s][3] != "block") { inside = stack[s][3]; } }
+                    if (inside == "sync") {
+                        Array.Append(result, {"range": _range(l, token[0], token[1]), "severity": SeverityError, "source": "aquarius",
+                            "message": "等待 只能用在非同步函式或腳本最上層 / await is only valid inside an async function or at the top level of a script."});
+                    }
+                }
+                previousKeyword = text;
+            } else if (kind == "identifier" || kind == "function") {
+                if (text == "非同步函式") { pendingFunction = "async"; }
+                previousKeyword = "";
+            } else if (kind == "punctuation") {
+                if (text == "(" || text == "[") { Array.Append(stack, [text, l, token[0], "block"]); }
+                else if (text == "{") {
+                    var opens = "block";
+                    if (pendingFunction != "") { opens = pendingFunction; pendingFunction = ""; }
+                    Array.Append(stack, [text, l, token[0], opens]);
+                } else if (text == ")" || text == "]" || text == "}") {
+                    var expected = "(";
+                    if (text == "]") { expected = "["; }
+                    if (text == "}") { expected = "{"; }
+                    if (len(stack) == 0 || stack[len(stack) - 1][0] != expected) {
+                        Array.Append(result, {"range": _range(l, token[0], token[1]), "severity": SeverityError, "source": "aquarius",
+                            "message": "多出的「" + text + "」 / Unmatched '" + text + "'."});
+                    } else { Array.Delete(stack, len(stack) - 1, len(stack)); }
+                }
+                if (text != "(") { previousKeyword = ""; }
+            }
+        }
+    }
+    for (var s = 0; s < len(stack); s++) {
+        var open = stack[s];
+        Array.Append(result, {"range": _range(open[1], open[2], open[2] + 1), "severity": SeverityError, "source": "aquarius",
+            "message": "「" + open[0] + "」沒有關閉 / '" + open[0] + "' is not closed."});
+    }
+    if (len(lines) > 0) {
+        var finalState = "";
+        for (var l = 0; l < len(lines); l++) { finalState = highlight.TokenizeLine(lines[l], finalState)["state"]; }
+        if (finalState == "string") {
+            Array.Append(result, {"range": _range(len(lines) - 1, 0, len(lines[len(lines) - 1])), "severity": SeverityError, "source": "aquarius",
+                "message": "字串沒有結束 / Unterminated string."});
+        }
+        if (finalState == "comment") {
+            Array.Append(result, {"range": _range(len(lines) - 1, 0, len(lines[len(lines) - 1])), "severity": SeverityError, "source": "aquarius",
+                "message": "區塊註解沒有結束 / Unterminated block comment."});
+        }
+    }
+    return result;
+};
+
+# ---- 宣告 / Declarations ----
+# 文件中宣告的名稱：[名稱, 行, 種類("variable"|"function"|"parameter"|"struct"), 細節]。
+# Names the document declares: [name, line, kind, detail].
+var Declarations = function(lines) {
+    var result = [];
+    var tokenLines = highlight.Tokenize(lines);
+    for (var l = 0; l < len(tokenLines); l++) {
+        var tokens = tokenLines[l];
+        for (var t = 0; t + 1 < len(tokens); t++) {
+            var text = String.Slice(lines[l], tokens[t][0], tokens[t][1]);
+            if ((text == "var" || text == "變數") && tokens[t][2] == "keyword") {
+                for (var u = t + 1; u < len(tokens); u++) {
+                    var name = String.Slice(lines[l], tokens[u][0], tokens[u][1]);
+                    if (name == "," ) { continue; }
+                    if (tokens[u][2] != "identifier" && tokens[u][2] != "function" && tokens[u][2] != "builtin" && tokens[u][2] != "module") { break; }
+                    var rest = String.Slice(lines[l], tokens[u][1], len(lines[l]));
+                    var kind = "variable";
+                    if (String.Contains(rest, "function") || String.Contains(rest, "函式")) { kind = "function"; }
+                    Array.Append(result, [name, l, kind, String.Trim(lines[l])]);
+                }
+            }
+            if ((text == "struct" || text == "結構") && tokens[t + 1][2] == "identifier") {
+                Array.Append(result, [String.Slice(lines[l], tokens[t + 1][0], tokens[t + 1][1]), l, "struct", String.Trim(lines[l])]);
+            }
+            if (text == "function" || text == "函式" || text == "非同步函式") {
+                # 參數：( 之後到 ) 的識別字。 / Parameters: identifiers between ( and ).
+                var u = t + 1;
+                if (u < len(tokens) && String.Slice(lines[l], tokens[u][0], tokens[u][1]) == "(") {
+                    for (var v = u + 1; v < len(tokens); v++) {
+                        var part = String.Slice(lines[l], tokens[v][0], tokens[v][1]);
+                        if (part == ")") { break; }
+                        if (tokens[v][2] == "identifier" && (v == t + 2 || String.Slice(lines[l], tokens[v - 1][0], tokens[v - 1][1]) == ",")) {
+                            Array.Append(result, [part, l, "parameter", "參數 parameter " + part]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return result;
+};
+
+# ---- 自動完成 / Completion ----
+var _startsWith = function(text, prefix) {
+    if (prefix == "") { return true; }
+    return String.StartsWith(String.Lower(text), String.Lower(prefix));
+};
+
+var _memberItems = function(module, prefix) {
+    var items = [];
+    var members = module[1];
+    for (var i = 0; i < len(members); i++) {
+        var m = members[i];
+        for (var k = 0; k < 2; k++) {
+            if (_startsWith(m[k], prefix)) {
+                Array.Append(items, {"label": m[k], "kind": KindMethod, "detail": m[k] + "(" + m[2] + ")",
+                    "documentation": m[3], "insertText": m[k] + "($1)", "insertTextFormat": 2});
+            }
+        }
+    }
+    return items;
+};
+
+# 「名稱.」前面的名稱指向哪個內建模組（直接名稱，或 變數 x = 匯入("名稱")）。 / The built-in module a name before
+# "." means: the module's own name, or a variable assigned import("Name").
+var _moduleOf = function(lines, name) {
+    var direct = language.Module(name);
+    if (direct != null) { return direct; }
+    for (var l = 0; l < len(lines); l++) {
+        var line = lines[l];
+        var at = String.Find(line, name + " = ");
+        if (at < 0) { continue; }
+        var rest = String.Slice(line, at + len(name) + 3, len(line));
+        var quote = String.Find(rest, "\"");
+        if ((String.StartsWith(rest, "import(") || String.StartsWith(rest, "匯入(")) && quote >= 0) {
+            var after = String.Slice(rest, quote + 1, len(rest));
+            var close = String.Find(after, "\"");
+            if (close > 0) {
+                var found = language.Module(String.Slice(after, 0, close));
+                if (found != null) { return found; }
+            }
+        }
+    }
+    return null;
+};
+
+var Complete = function(lines, line, character) {
+    var text = lines[line];
+    var before = String.Slice(text, 0, character);
+    var buffer = buffers.Create(String.Join(lines, String.FromCode(10)));
+    var prefix = buffers.PrefixAt(buffer, buffers.Pos(line, character));
+    var dot = len(before) - len(prefix) - 1;
+    if (dot >= 0 && String.Code(before, dot) == 46) {
+        # 成員：點前面的名稱。 / Members: the name before the dot.
+        var head = buffers.WordAt(buffer, buffers.Pos(line, dot));
+        var owner = String.Slice(text, head[0], dot);
+        var module = _moduleOf(lines, owner);
+        if (module != null) { return _memberItems(module, prefix); }
+        return [];
+    }
+    var items = [];
+    var seen = {};
+    var add = function(item) {
+        if (seen[item["label"]] == true) { return false; }
+        seen[item["label"]] = true;
+        Array.Append(items, item);
+        return true;
+    };
+    var declared = Declarations(lines);
+    for (var i = 0; i < len(declared); i++) {
+        var d = declared[i];
+        if (_startsWith(d[0], prefix) && d[0] != prefix) {
+            var kind = KindVariable;
+            if (d[2] == "function") { kind = KindFunction; }
+            if (d[2] == "struct") { kind = KindModule; }
+            add({"label": d[0], "kind": kind, "detail": d[3], "sortText": "0" + d[0]});
+        }
+    }
+    for (var i = 0; i < len(language.Keywords); i++) {
+        var k = language.Keywords[i];
+        for (var j = 0; j < 2; j++) {
+            if (_startsWith(k[j], prefix)) {
+                var kind = KindKeyword;
+                if (k[1] == "true" || k[1] == "false" || k[1] == "null") { kind = KindConstant; }
+                add({"label": k[j], "kind": kind, "detail": k[2], "sortText": "2" + k[j]});
+            }
+        }
+    }
+    for (var i = 0; i < len(language.Builtins); i++) {
+        var b = language.Builtins[i];
+        for (var j = 0; j < 2; j++) {
+            if (_startsWith(b[j], prefix)) {
+                add({"label": b[j], "kind": KindFunction, "detail": b[j] + "(" + b[2] + ")", "documentation": b[3],
+                    "insertText": b[j] + "($1)", "insertTextFormat": 2, "sortText": "1" + b[j]});
+            }
+        }
+    }
+    for (var i = 0; i < len(language.Modules); i++) {
+        var names = language.Modules[i][0];
+        for (var j = 0; j < 2; j++) {
+            if (_startsWith(names[j], prefix)) { add({"label": names[j], "kind": KindModule, "detail": "模組 module", "sortText": "1" + names[j]}); }
+        }
+    }
+    for (var i = 0; i < len(language.Snippets); i++) {
+        var s = language.Snippets[i];
+        if (prefix != "" && _startsWith(s[0], prefix)) {
+            Array.Append(items, {"label": s[0], "kind": KindSnippet, "detail": s[1], "insertText": s[2], "insertTextFormat": 2, "sortText": "3" + s[0]});
+        }
+    }
+    return items;
+};
+
+# ---- 說明 / Hover ----
+var Hover = function(lines, line, character) {
+    var buffer = buffers.Create(String.Join(lines, String.FromCode(10)));
+    var word = buffers.WordAt(buffer, buffers.Pos(line, character));
+    if (word[0] == word[1]) { return null; }
+    var name = String.Slice(lines[line], word[0], word[1]);
+    var range = _range(line, word[0], word[1]);
+    var keyword = language.Keyword(name);
+    if (keyword != null) { return {"contents": {"kind": "plaintext", "value": keyword[2]}, "range": range}; }
+    var builtin = language.Builtin(name);
+    if (builtin != null) { return {"contents": {"kind": "plaintext", "value": builtin[0] + " / " + builtin[1] + "(" + builtin[2] + ") — " + builtin[3]}, "range": range}; }
+    var module = language.Module(name);
+    if (module != null) { return {"contents": {"kind": "plaintext", "value": module[0][0] + " / " + module[0][1] + " — 內建模組 / built-in module"}, "range": range}; }
+    if (word[0] > 0 && String.Code(lines[line], word[0] - 1) == 46) {
+        var head = buffers.WordAt(buffer, buffers.Pos(line, word[0] - 1));
+        var owner = _moduleOf(lines, String.Slice(lines[line], head[0], word[0] - 1));
+        if (owner != null) {
+            var members = owner[1];
+            for (var i = 0; i < len(members); i++) {
+                if (members[i][0] == name || members[i][1] == name) {
+                    return {"contents": {"kind": "plaintext", "value": members[i][0] + " / " + members[i][1] + "(" + members[i][2] + ") — " + members[i][3]}, "range": range};
+                }
+            }
+        }
+    }
+    var declared = Declarations(lines);
+    for (var i = 0; i < len(declared); i++) {
+        if (declared[i][0] == name) {
+            return {"contents": {"kind": "plaintext", "value": declared[i][3] + "  (第 " + String.From(declared[i][1] + 1) + " 行 / line " + String.From(declared[i][1] + 1) + ")"}, "range": range};
+        }
+    }
+    return null;
+};
+
+# ---- 參數提示 / Signature help ----
+var SignatureHelp = function(lines, line, character) {
+    var text = String.Slice(lines[line], 0, character);
+    var depth = 0;
+    var commas = 0;
+    for (var i = len(text) - 1; i >= 0; i -= 1) {
+        var c = String.Code(text, i);
+        if (c == 41) { depth++; }
+        else if (c == 40) {
+            if (depth > 0) { depth -= 1; continue; }
+            var buffer = buffers.Create(lines[line]);
+            var word = buffers.WordAt(buffer, buffers.Pos(0, i));
+            var name = String.Slice(text, word[0], i);
+            var entry = language.Builtin(name);
+            var label = "";
+            var doc = "";
+            if (entry != null) { label = name + "(" + entry[2] + ")"; doc = entry[3]; }
+            else if (word[0] > 0 && String.Code(text, word[0] - 1) == 46) {
+                var head = buffers.WordAt(buffer, buffers.Pos(0, word[0] - 1));
+                var owner = _moduleOf(lines, String.Slice(text, head[0], word[0] - 1));
+                if (owner != null) {
+                    for (var m = 0; m < len(owner[1]); m++) {
+                        if (owner[1][m][0] == name || owner[1][m][1] == name) { label = name + "(" + owner[1][m][2] + ")"; doc = owner[1][m][3]; }
+                    }
+                }
+            }
+            if (label == "") { return null; }
+            return {"signatures": [{"label": label, "documentation": doc}], "activeSignature": 0, "activeParameter": commas};
+        } else if (c == 44 && depth == 0) { commas++; }
+    }
+    return null;
+};
+
+# ---- LSP 方法 / LSP methods ----
+# 在 JSON-RPC 端點上提供語言伺服器。 / Serve the language server on a JSON-RPC endpoint.
+var Serve = function(endpoint) {
+    var documents = {};
+    var publish = function(uri) {
+        var buffer = documents[uri];
+        endpoint.Notify("textDocument/publishDiagnostics", {"uri": uri, "version": buffer.version, "diagnostics": Diagnose(buffer.lines)});
+    };
+    endpoint.Handle("initialize", function(params) {
+        return {"capabilities": {
+            "textDocumentSync": {"openClose": true, "change": 2},
+            "completionProvider": {"triggerCharacters": ["."], "resolveProvider": false},
+            "hoverProvider": true,
+            "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
+            "documentSymbolProvider": true
+        }, "serverInfo": {"name": "AquaEditor built-in AquariusLang server", "version": "1.0.0"}};
+    });
+    endpoint.OnNotification("initialized", function(params) { 0; });
+    endpoint.Handle("shutdown", function(params) { return null; });
+    endpoint.OnNotification("exit", function(params) { 0; });
+    endpoint.OnNotification("textDocument/didOpen", function(params) {
+        var document = params["textDocument"];
+        var buffer = buffers.Create(document["text"]);
+        buffer.version = document["version"];
+        documents[document["uri"]] = buffer;
+        publish(document["uri"]);
+    });
+    endpoint.OnNotification("textDocument/didChange", function(params) {
+        var uri = params["textDocument"]["uri"];
+        var buffer = documents[uri];
+        if (buffer == null) { return null; }
+        var changes = params["contentChanges"];
+        for (var i = 0; i < len(changes); i++) {
+            var change = changes[i];
+            if (change["range"] == null) { buffer = buffers.Create(change["text"]); documents[uri] = buffer; }
+            else {
+                var range = change["range"];
+                buffers.Edit(buffer, buffers.Pos(range["start"]["line"], range["start"]["character"]),
+                    buffers.Pos(range["end"]["line"], range["end"]["character"]), change["text"]);
+            }
+        }
+        buffer.version = params["textDocument"]["version"];
+        publish(uri);
+    });
+    endpoint.OnNotification("textDocument/didClose", function(params) { Hash.Delete(documents, params["textDocument"]["uri"]); });
+    var at = function(params) {
+        var buffer = documents[params["textDocument"]["uri"]];
+        if (buffer == null) { return null; }
+        return [buffer.lines, params["position"]["line"], params["position"]["character"]];
+    };
+    endpoint.Handle("textDocument/completion", function(params) {
+        var place = at(params);
+        if (place == null) { return []; }
+        return {"isIncomplete": false, "items": Complete(place[0], place[1], place[2])};
+    });
+    endpoint.Handle("textDocument/hover", function(params) {
+        var place = at(params);
+        if (place == null) { return null; }
+        return Hover(place[0], place[1], place[2]);
+    });
+    endpoint.Handle("textDocument/signatureHelp", function(params) {
+        var place = at(params);
+        if (place == null) { return null; }
+        return SignatureHelp(place[0], place[1], place[2]);
+    });
+    endpoint.Handle("textDocument/documentSymbol", function(params) {
+        var buffer = documents[params["textDocument"]["uri"]];
+        if (buffer == null) { return []; }
+        var declared = Declarations(buffer.lines);
+        var symbols = [];
+        for (var i = 0; i < len(declared); i++) {
+            if (declared[i][2] == "parameter") { continue; }
+            var kind = 13;
+            if (declared[i][2] == "function") { kind = 12; }
+            if (declared[i][2] == "struct") { kind = 23; }
+            var r = _range(declared[i][1], 0, len(buffer.lines[declared[i][1]]));
+            Array.Append(symbols, {"name": declared[i][0], "kind": kind, "range": r, "selectionRange": r});
+        }
+        return symbols;
+    });
+    return endpoint;
+};

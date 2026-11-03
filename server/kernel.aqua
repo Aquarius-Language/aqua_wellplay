@@ -1,0 +1,475 @@
+##
+核心：在伺服器的桌面上執行儲存格。執行環境不能把新程式碼載入正在執行的程式，所以每次執行都會編譯一個程式：開頭是顯示
+模組（kernel/display.aqua），然後是這個筆記本已經成功執行過的儲存格（它們的輸出不顯示），最後是要執行的儲存格；程式以
+`aqua run` 在筆記本的資料夾執行（目前工作目錄就是那裡，同一資料夾的 .aqua 模組可以匯入）。重新執行一個儲存格會取代它
+先前的版本，而不是再加一次。輸出（文字、豐富輸出、錯誤）一邊執行一邊送出；中斷會結束整個程序樹。
+The kernel: runs cells on the server's desktop. The runtime cannot load new code into a running program, so every
+execution compiles one program: the display module (kernel/display.aqua), then the cells this notebook already ran
+successfully (their output hidden), then the cells to run, started with `aqua run` in the notebook's folder (that is
+its current working directory, and .aqua modules there can be imported). Running a cell again replaces its earlier
+version instead of adding it twice. Output (text, rich outputs, errors) streams while the program runs; interrupting
+ends the whole process tree.
+##
+var Terminal = import("Terminal");
+var Serialization = import("Serialization");
+var Network = import("Network");
+var Files = import("Files");
+var Paths = import("Paths");
+
+var NL = String.FromCode(10);
+var RS = String.FromCode(30);
+# 一個儲存格最多保留的文字輸出（UTF-16 單位）；之後的輸出只留下一行說明。 / The text output kept per cell (UTF-16
+# units); after it one line says the rest was dropped.
+var StreamLimit = 400000;
+
+struct Run { requestId; cells; token; process; lineMap; current; started; count; text; dropped; pending; finished; failed; file; carry; errorText }
+struct Session { path; directory; history; count; queue; running; subscribers; state }
+struct Kernel { Execute; Interrupt; Restart; Subscribe; Unsubscribe; Status; Shutdown; LastExpression }
+
+# ---- 最後一個運算式 / The last expression ----
+# 儲存格最後一個敘述若是運算式，就包成 __wellplay.result(...)，讓它的值成為 Out[n]（和 IPython 一樣）。宣告、指派、
+# 控制流程與 print 不顯示。 / A cell's last statement, when it is an expression, is wrapped in __wellplay.result(...)
+# so its value becomes Out[n] as in IPython. Declarations, assignments, control flow and print show nothing.
+var statementWords = ["var", "變數", "const", "常數", "if", "如果", "elif", "else", "否則", "否則如果", "for", "迴圈", "return",
+    "回傳", "struct", "結構", "break", "中斷", "continue", "繼續", "print", "印出"];
+var isWordChar = function(c) {
+    if (c == null) { return false; }
+    var code = String.Code(c, 0);
+    return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code == 95 || code > 127;
+};
+var LastExpression = function(source) {
+    # 掃描字串、註解與括號，記下最上層敘述的邊界。 / Scan strings, comments and brackets; note top-level statement
+    # boundaries.
+    var n = len(source);
+    var depth = 0;
+    var boundary = 0;
+    var lastSignificant = -1;    # 最後一個不是空白或註解的字元 / the last character outside spaces and comments
+    var assignment = -1;         # 目前敘述中最上層的指派 / a top-level assignment in the current statement
+    var i = 0;
+    for (; i < n;) {
+        var c = source[i];
+        if (c == "\"") {
+            i++;
+            for (; i < n && source[i] != "\"";) { if (source[i] == "\\") { i++; } i++; }
+            lastSignificant = i;
+            i++;
+            continue;
+        }
+        if (c == "#") {
+            if (i + 1 < n && source[i + 1] == "#") {
+                var close = String.Find(String.Slice(source, i + 2, n), "##");
+                if (close < 0) { i = n; } else { i = i + 2 + close + 2; }
+                continue;
+            }
+            for (; i < n && source[i] != NL;) { i++; }
+            continue;
+        }
+        if (c == "(" || c == "[" || c == "{") { depth++; }
+        if (c == ")" || c == "]" || c == "}") { depth -= 1; }
+        if (depth == 0) {
+            if (c == ";") { boundary = i + 1; assignment = -1; i++; continue; }
+            if (c == "}" ) {
+                # 一個區塊在行尾結束（if、for、函式宣告...）：下一個敘述從這裡開始。 / A block ending its line.
+                var j = i + 1;
+                for (; j < n && (source[j] == " " || source[j] == "\t" || source[j] == String.FromCode(13));) { j++; }
+                if (j >= n || source[j] == NL) { boundary = i + 1; assignment = -1; lastSignificant = i; i++; continue; }
+            }
+            if (c == NL && lastSignificant >= boundary && (isWordChar(source[lastSignificant]) || source[lastSignificant] == ")" || source[lastSignificant] == "]" || source[lastSignificant] == "\"")) {
+                # 沒有分號的換行：下一行若不是接續（運算子、.、?），就是新的敘述。 / A newline without a semicolon starts
+                # a new statement unless the next line continues this one.
+                var j = i + 1;
+                for (; j < n && (source[j] == " " || source[j] == "\t" || source[j] == NL || source[j] == String.FromCode(13));) { j++; }
+                if (j < n && (isWordChar(source[j]) || source[j] == "\"")) { boundary = i + 1; assignment = -1; i++; continue; }
+            }
+            if (c == "=") {
+                var before = if (i > 0) { source[i - 1]; } else { ""; };
+                var after = if (i + 1 < n) { source[i + 1]; } else { ""; };
+                if (after != "=" && after != ">" && before != "=" && before != "!" && before != "<" && before != ">") { assignment = i; }
+            }
+        }
+        if (c != " " && c != "\t" && c != NL && c != String.FromCode(13)) { lastSignificant = i; }
+        i++;
+    }
+    if (lastSignificant < boundary || assignment >= boundary) { return null; }
+    var statement = String.Trim(String.Slice(source, boundary, lastSignificant + 1));
+    if (statement == "" || depth != 0) { return null; }
+    # 第一個字是敘述關鍵字（或 print）就不是要顯示的值。 / A statement keyword (or print) first shows nothing.
+    var word = "";
+    for (var k = 0; k < len(statement) && isWordChar(statement[k]); k++) { word += statement[k]; }
+    if (Array.Contains(statementWords, word)) { return null; }
+    if (String.StartsWith(statement, "++") || String.EndsWith(statement, "++")) { return null; }
+    var start = boundary + String.Find(String.Slice(source, boundary, n), statement);
+    return {"start": start, "end": start + len(statement)};
+};
+var withResult = function(source) {
+    var last = LastExpression(source);
+    if (last == null) { return source; }
+    return String.Slice(source, 0, last["start"]) + "__wellplay.result(" + String.Slice(source, last["start"], last["end"]) +
+        ");" + String.Slice(source, last["end"], len(source));
+};
+
+var lineCount = function(text) { return len(String.Split(text, NL)); };
+var hexOf = function(bytes) {
+    var digits = "0123456789abcdef";
+    var text = "";
+    for (var i = 0; i < len(bytes); i++) { text += digits[bytes[i] >> 4] + digits[bytes[i] & 15]; }
+    return text;
+};
+
+# ---- 核心 / The kernel ----
+# options：aqua（編譯器）、display（顯示模組的原始碼）、workspace、log(text)。 / options: aqua (the compiler), display
+# (the display module's source), workspace, log(text).
+var Create = function(options) {
+    var aqua = options["aqua"];
+    var displaySource = options["display"];
+    var workspace = options["workspace"];
+    var log = options["log"];
+    var sessions = {};
+
+    var sessionOf = function(path) {
+        var session = sessions[path];
+        if (session == null) {
+            var absolute = workspace.Resolve(path);
+            session = Session(path: path, directory: Paths.Parent(absolute), history: [], count: 0, queue: [], running: null,
+                subscribers: [], state: "idle");
+            sessions[path] = session;
+        }
+        return session;
+    };
+    var broadcast = function(session, method, params) {
+        params["path"] = session.path;
+        for (var i = 0; i < len(session.subscribers); i++) { session.subscribers[i].Notify(method, params); }
+        return null;
+    };
+    var setState = function(session, state) {
+        session.state = state;
+        broadcast(session, "kernel/status", {"state": state, "queued": len(session.queue), "count": session.count});
+    };
+
+    # ---- 程式 / The program ----
+    var assemble = function(session, run) {
+        var targets = Array.Map(run.cells, c => c["id"]);
+        var prelude = displaySource + NL + "var __wellplay = __wellplayKernel(\"" + run.token + "\");" + NL +
+            "var Display = __wellplay.display;" + NL + "var 顯示 = Display;" + NL;
+        var parts = [prelude];
+        var line = lineCount(prelude);
+        var map = [];
+        var add = function(id, source, target) {
+            var marker = "__wellplay.cell(\"" + id + "\");" + NL;
+            Array.Append(parts, marker);
+            line += 1;
+            Array.Append(map, {"id": id, "first": line, "lines": lineCount(source), "target": target, "source": source});
+            Array.Append(parts, source + NL);
+            line += lineCount(source);
+        };
+        # 重播到第一個要執行的儲存格先前的位置為止（之後的歷史留著，但這次不跑）。 / Replay the history up to where the
+        # first cell to run was (later history stays, but does not run this time).
+        for (var i = 0; i < len(session.history); i++) {
+            if (Array.Contains(targets, session.history[i]["id"])) { break; }
+            add(session.history[i]["id"], session.history[i]["source"], false);
+        }
+        for (var i = 0; i < len(run.cells); i++) { add(run.cells[i]["id"], withResult(run.cells[i]["source"]), true); }
+        # 最後一個敘述不是運算式，所以執行環境不會印出程式的值。 / The last statement is no expression, so the runtime
+        # prints no program value.
+        Array.Append(parts, "__wellplay.cell(\"\");" + NL + "var __wellplayEnd = 0;" + NL);
+        run.lineMap = map;
+        return String.Join(parts, "");
+    };
+    var segmentAt = function(run, line) {
+        for (var i = 0; i < len(run.lineMap); i++) {
+            var m = run.lineMap[i];
+            if (line >= m["first"] && line < m["first"] + m["lines"]) { return m; }
+        }
+        return null;
+    };
+    var isTarget = function(run, id) {
+        for (var i = 0; i < len(run.cells); i++) { if (run.cells[i]["id"] == id) { return true; } }
+        return false;
+    };
+    var sourceOf = function(run, id) {
+        for (var i = 0; i < len(run.cells); i++) { if (run.cells[i]["id"] == id) { return run.cells[i]["source"]; } }
+        return "";
+    };
+
+    # ---- 輸出 / Output ----
+    var output = function(session, run, id, value) { broadcast(session, "kernel/output", {"cell": id, "output": value}); };
+    var flushText = function(session, run) {
+        if (run.text == "" || run.current == null) { return null; }
+        output(session, run, run.current, {"output_type": "stream", "name": "stdout", "text": run.text});
+        run.text = "";
+    };
+    var appendText = function(session, run, text) {
+        if (run.current == null || !isTarget(run, run.current)) { return null; }
+        var used = run.count[run.current];
+        if (used == null) { used = 0; }
+        if (used >= StreamLimit) {
+            if (!Array.Contains(run.dropped, run.current)) {
+                Array.Append(run.dropped, run.current);
+                run.text += "… output truncated / 輸出過多，以下省略" + NL;
+            }
+            return null;
+        }
+        run.count[run.current] = used + len(text);
+        run.text += text;
+    };
+    var error = function(session, run, id, name, value, lines) {
+        flushText(session, run);
+        output(session, run, id, {"output_type": "error", "ename": name, "evalue": value, "traceback": lines});
+    };
+    var finishCell = function(session, run, id, status) {
+        if (id == null || id == "" || !isTarget(run, id) || Array.Contains(run.finished, id)) { return null; }
+        flushText(session, run);
+        Array.Append(run.finished, id);
+        if (status == "ok") {
+            # 成功的儲存格進入歷史；再次執行時在原位置取代舊版本，所以依賴它的儲存格重播時看到新版本。 / A successful
+            # cell enters the history; run again, it replaces its old version in place, so the cells that depend on it
+            # replay after it.
+            var entry = {"id": id, "source": sourceOf(run, id)};
+            var replaced = false;
+            for (var h = 0; h < len(session.history); h++) {
+                if (session.history[h]["id"] == id) { session.history[h] = entry; replaced = true; }
+            }
+            if (!replaced) { Array.Append(session.history, entry); }
+        }
+        var started = run.started[id];
+        var ms = if (started == null) { 0; } else { int(currentTime() - started); };
+        broadcast(session, "kernel/finished", {"cell": id, "status": status, "milliseconds": ms});
+    };
+    var startCell = function(session, run, id) {
+        flushText(session, run);
+        if (run.current != null && isTarget(run, run.current)) { finishCell(session, run, run.current, "ok"); }
+        run.current = id;
+        if (isTarget(run, id)) {
+            session.count += 1;
+            run.started[id] = currentTime();
+            broadcast(session, "kernel/started", {"cell": id, "count": session.count});
+        }
+    };
+    var message = function(session, run, text) {
+        var parsed = Network.Try(() => Serialization.ParseJson(text));
+        if (!parsed.Success) { return null; }
+        var m = parsed.Value;
+        var type = m["t"];
+        if (type == "cell") { startCell(session, run, m["id"]); return null; }
+        if (run.current == null || !isTarget(run, run.current)) { return null; }
+        flushText(session, run);
+        if (type == "display") {
+            var o = {"output_type": "display_data", "data": m["data"], "metadata": m["metadata"]};
+            if (m["id"] != null) { o["transient"] = {"display_id": String.From(m["id"])}; }
+            output(session, run, run.current, o);
+        } elif (type == "update") {
+            broadcast(session, "kernel/update", {"cell": run.current, "display": String.From(m["id"]),
+                "output": {"output_type": "display_data", "data": m["data"], "metadata": m["metadata"], "transient": {"display_id": String.From(m["id"])}}});
+        } elif (type == "result") {
+            output(session, run, run.current, {"output_type": "execute_result", "execution_count": session.count, "data": m["data"], "metadata": m["metadata"]});
+        } elif (type == "clear") {
+            broadcast(session, "kernel/clear", {"cell": run.current, "wait": m["wait"] == true});
+        }
+    };
+    var standardOutput = function(session, run, chunk) {
+        var text = run.carry + chunk;
+        var lines = String.Split(text, NL);
+        run.carry = lines[len(lines) - 1];
+        var prefix = RS + run.token;
+        for (var i = 0; i + 1 < len(lines); i++) {
+            var line = lines[i];
+            if (String.EndsWith(line, String.FromCode(13))) { line = String.Slice(line, 0, len(line) - 1); }
+            if (String.StartsWith(line, prefix)) { message(session, run, String.Slice(line, len(prefix), len(line))); continue; }
+            if (String.StartsWith(line, "ERROR: ")) {
+                # 執行期錯誤結束程式。 / A runtime error ends the program.
+                run.failed = true;
+                var where = run.current;
+                var value = String.Slice(line, 7, len(line));
+                if (where != null && isTarget(run, where)) { error(session, run, where, "RuntimeError", value, ["RuntimeError: " + value]); }
+                else {
+                    var first = run.cells[0]["id"];
+                    error(session, run, first, "ReplayError", value, ["An earlier cell failed while replaying / 重播先前的儲存格時失敗：", value,
+                        "Restart the kernel to clear the history / 重新啟動核心即可清除歷史。"]);
+                    where = first;
+                }
+                finishCell(session, run, where, "error");
+                continue;
+            }
+            appendText(session, run, line + NL);
+        }
+        flushText(session, run);
+    };
+    # 標準錯誤：編譯錯誤（檔案:行:欄: 訊息）對應回儲存格，其餘當作 stderr。 / Standard error: compile errors
+    # (file:line:column: message) map back to their cell, the rest is stderr text.
+    var standardError = function(session, run, chunk) { run.errorText += chunk; };
+    var reportErrors = function(session, run) {
+        var lines = String.Split(run.errorText, NL);
+        var file = Paths.Name(run.file);
+        var compile = [];
+        var other = [];
+        for (var i = 0; i < len(lines); i++) {
+            var line = String.Trim(lines[i]);
+            if (line == "") { continue; }
+            var at = String.Find(line, file + ":");
+            if (at >= 0) {
+                var rest = String.Slice(line, at + len(file) + 1, len(line));
+                var pieces = String.Split(rest, ":");
+                var number = String.ParseInt(pieces[0]);
+                if (number != null && len(pieces) >= 3) {
+                    var column = String.ParseInt(pieces[1]);
+                    var text = String.Trim(String.Join(Array.Slice(pieces, 2, len(pieces)), ":"));
+                    Array.Append(compile, {"line": number, "column": column, "message": text});
+                    continue;
+                }
+                Array.Append(compile, {"line": 0, "column": 0, "message": String.Trim(String.Replace(rest, run.file, ""))});
+                continue;
+            }
+            # 編譯器的進度訊息不算錯誤。 / The compiler's progress lines are no errors.
+            if (String.StartsWith(line, "Compiled ")) { continue; }
+            Array.Append(other, lines[i]);
+        }
+        if (len(compile) > 0) {
+            run.failed = true;
+            var byCell = {};
+            var order = [];
+            for (var i = 0; i < len(compile); i++) {
+                var e = compile[i];
+                var segment = segmentAt(run, e["line"]);
+                var id = run.cells[0]["id"];
+                var where = e["message"];
+                if (segment != null) {
+                    var local = e["line"] - segment["first"] + 1;
+                    where = "line " + String.From(local) + ", column " + String.From(e["column"]) + ": " + e["message"];
+                    if (segment["target"]) { id = segment["id"]; }
+                    else { where = "in an earlier cell / 在先前的儲存格中, " + where; }
+                }
+                if (byCell[id] == null) { byCell[id] = []; Array.Append(order, id); }
+                Array.Append(byCell[id], where);
+            }
+            for (var i = 0; i < len(order); i++) {
+                var id = order[i];
+                if (!Array.Contains(run.finished, id)) {
+                    error(session, run, id, "CompileError", byCell[id][0], Array.Map(byCell[id], m => "CompileError: " + m));
+                    finishCell(session, run, id, "error");
+                }
+            }
+        } elif (len(other) > 0) {
+            var id = if (run.current != null && isTarget(run, run.current)) { run.current; } else { run.cells[0]["id"]; };
+            output(session, run, id, {"output_type": "stream", "name": "stderr", "text": String.Join(other, NL) + NL});
+        }
+    };
+
+    # ---- 執行佇列 / The execution queue ----
+    var next = null;
+    var begin = function(session) {
+        if (session.running != null || len(session.queue) == 0) { return null; }
+        var request = session.queue[0];
+        Array.Delete(session.queue, 0, 1);
+        var run = Run(requestId: request["id"], cells: request["cells"], token: hexOf(Network.RandomBytes(8)), process: null,
+            lineMap: [], current: null, started: {}, count: {}, text: "", dropped: [], pending: [], finished: [], failed: false,
+            file: "", carry: "", errorText: "");
+        session.running = run;
+        setState(session, "busy");
+        var name = Paths.Name(session.path);
+        run.file = session.directory + "/.wellplay-" + String.Replace(name, ".ipynb", "") + "-" + run.token + ".aqua";
+        var source = assemble(session, run);
+        var saved = Network.Try(() => Files.SaveText(Files.Resolve(run.file), source, "utf-8"));
+        if (!saved.Success) {
+            error(session, run, run.cells[0]["id"], "KernelError", saved.Error.Message, [saved.Error.Message]);
+            for (var i = 0; i < len(run.cells); i++) { finishCell(session, run, run.cells[i]["id"], "aborted"); }
+            session.running = null;
+            setState(session, "idle");
+            return next(session);
+        }
+        var started = Network.Try(() => Terminal.Start(aqua, ["run", run.file], {
+            "WorkingDirectory": session.directory,
+            "OnOutput": text => standardOutput(session, run, text),
+            "OnError": text => standardError(session, run, text),
+        }));
+        if (!started.Success) {
+            error(session, run, run.cells[0]["id"], "KernelError", started.Error.Message, ["Cannot start " + aqua + " / 無法啟動編譯器：", started.Error.Message]);
+            Network.Try(() => Files.Delete(Files.Resolve(run.file), false));
+            for (var i = 0; i < len(run.cells); i++) { finishCell(session, run, run.cells[i]["id"], "aborted"); }
+            session.running = null;
+            setState(session, "idle");
+            return next(session);
+        }
+        run.process = started.Value;
+        log("run " + session.path + " (" + String.From(len(run.cells)) + " cell(s), " + String.From(len(session.history)) + " in history)");
+        run.process.WaitAsync().Then(result => {
+            if (run.carry != "") { standardOutput(session, run, NL); }
+            reportErrors(session, run);
+            var ok = result.ExitCode == 0 && !run.failed;
+            if (run.current != null && isTarget(run, run.current)) { finishCell(session, run, run.current, if (ok) { "ok"; } else { "error"; }); }
+            # 沒有執行到的儲存格（前面出錯或被中斷）。 / Cells that never ran (an earlier error or an interrupt).
+            for (var i = 0; i < len(run.cells); i++) { finishCell(session, run, run.cells[i]["id"], if (ok) { "ok"; } else { "aborted"; }); }
+            Network.Try(() => Files.Delete(Files.Resolve(run.file), false));
+            session.running = null;
+            # 出錯時清掉之後排隊的執行（和 Jupyter 一樣）。 / An error drops the queued executions, as Jupyter does.
+            if (!ok) {
+                for (var q = 0; q < len(session.queue); q++) {
+                    var cells = session.queue[q]["cells"];
+                    for (var c = 0; c < len(cells); c++) { broadcast(session, "kernel/finished", {"cell": cells[c]["id"], "status": "aborted", "milliseconds": 0}); }
+                }
+                session.queue = [];
+            }
+            setState(session, "idle");
+            next(session);
+            return null;
+        });
+        return null;
+    };
+    next = begin;
+
+    # cells：[{"id", "source"}]，依序執行。 / cells: [{"id", "source"}], run in order.
+    var execute = function(path, cells) {
+        var session = sessionOf(path);
+        if (len(cells) == 0) { return {"queued": 0}; }
+        Array.Append(session.queue, {"id": hexOf(Network.RandomBytes(4)), "cells": cells});
+        for (var i = 0; i < len(cells); i++) { broadcast(session, "kernel/queued", {"cell": cells[i]["id"]}); }
+        if (session.running == null) { begin(session); } else { setState(session, "busy"); }
+        return {"queued": len(cells)};
+    };
+    var interrupt = function(path) {
+        var session = sessionOf(path);
+        var run = session.running;
+        if (run == null || run.process == null) { return false; }
+        if (run.current != null && isTarget(run, run.current)) {
+            error(session, run, run.current, "KeyboardInterrupt", "Interrupted / 已中斷", ["KeyboardInterrupt: Interrupted / 已中斷"]);
+        }
+        run.failed = true;
+        return run.process.Kill();
+    };
+    var restart = function(path) {
+        var session = sessionOf(path);
+        session.queue = [];
+        interrupt(path);
+        session.history = [];
+        session.count = 0;
+        setState(session, if (session.running == null) { "idle"; } else { "busy"; });
+        broadcast(session, "kernel/restarted", {});
+        return true;
+    };
+    var subscribe = function(path, endpoint) {
+        var session = sessionOf(path);
+        if (!Array.Contains(session.subscribers, endpoint)) { Array.Append(session.subscribers, endpoint); }
+        return {"state": session.state, "count": session.count, "queued": len(session.queue), "history": Array.Map(session.history, h => h["id"])};
+    };
+    var unsubscribe = function(endpoint) {
+        var keys = Hash.Keys(sessions);
+        for (var i = 0; i < len(keys); i++) {
+            var session = sessions[keys[i]];
+            session.subscribers = Array.Filter(session.subscribers, e => e != endpoint);
+        }
+        return null;
+    };
+    var status = function() {
+        var keys = Hash.Keys(sessions);
+        return Array.Map(keys, k => ({"path": k, "state": sessions[k].state, "count": sessions[k].count, "history": len(sessions[k].history)}));
+    };
+    var shutdown = function() {
+        var keys = Hash.Keys(sessions);
+        for (var i = 0; i < len(keys); i++) {
+            var run = sessions[keys[i]].running;
+            if (run != null && run.process != null) { run.process.Kill(); }
+        }
+        return null;
+    };
+    return Kernel(Execute: execute, Interrupt: interrupt, Restart: restart, Subscribe: subscribe, Unsubscribe: unsubscribe,
+        Status: status, Shutdown: shutdown, LastExpression: LastExpression);
+};

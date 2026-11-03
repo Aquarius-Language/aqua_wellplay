@@ -1,0 +1,147 @@
+##
+端對端測試：連到正在執行的 aqua_wellplay（WELLPLAY_URL，例如 ws://127.0.0.1:8901/rpc?token=t0k），建立筆記本、執行
+儲存格並檢查串流的輸出、豐富輸出、Out[n]、編譯與執行期錯誤、歷史（取代與重播）、中斷與重新啟動。成功時印出
+WELLPLAY_OK。
+The end-to-end test: connects to a running aqua_wellplay (WELLPLAY_URL, e.g. ws://127.0.0.1:8901/rpc?token=t0k),
+creates a notebook, runs cells and checks streamed text, rich outputs, Out[n], compile and runtime errors, the history
+(replacing and replaying), interrupting and restarting. Prints WELLPLAY_OK on success.
+##
+var rpc = import("AquaJSONRPC");
+var Application = import("Application");
+var Serialization = import("Serialization");
+# 字串沒有換行跳脫：以換行字元連接各行。 / Strings have no newline escape: join lines with a newline character.
+var NL = String.FromCode(10);
+var Q = "\"";
+var src = parts => String.Join(parts, NL);
+
+var url = Application.Environment("WELLPLAY_URL");
+if (url == null) { url = "ws://127.0.0.1:8901/rpc?token=t0k"; }
+var endpoint = await rpc.ConnectWebSocketAsync(url, {"timeout": 8000});
+var failures = 0;
+var check = function(name, ok, detail = "") {
+    if (ok) { print("PASS", name); } else { print("FAIL", name, detail); failures++; }
+    return ok;
+};
+
+# 每個儲存格收到的通知。 / The notifications each cell receives.
+var events = {};
+var finished = {};
+var record = function(kind) {
+    return function(params) {
+        var cell = params["cell"];
+        if (events[cell] == null) { events[cell] = []; }
+        Array.Append(events[cell], {"kind": kind, "params": params});
+        if (kind == "finished") { finished[cell] = params["status"]; }
+        return null;
+    };
+};
+var kinds = ["queued", "started", "output", "update", "clear", "finished"];
+for (var i = 0; i < len(kinds); i++) { endpoint.OnNotification("kernel/" + kinds[i], record(kinds[i])); }
+
+var waitFor = async function(cell, limit = 60000) {
+    var started = currentTime();
+    for (; finished[cell] == null && currentTime() - started < limit;) { await Promise.Delay(50); }
+    return finished[cell];
+};
+var outputsOf = function(cell) {
+    var list = Hash.Get(events, cell, []);
+    return Array.Map(Array.Filter(list, e => e["kind"] == "output"), e => e["params"]["output"]);
+};
+var ofType = (cell, type) => Array.Filter(outputsOf(cell), o => o["output_type"] == type);
+var textOf = function(cell) { return String.Join(Array.Map(ofType(cell, "stream"), o => o["text"]), ""); };
+var dump = cell => Serialization.Json(outputsOf(cell));
+var run = async function(cells) {
+    finished = {};
+    events = {};
+    await endpoint.Call("kernel/execute", {"path": "test.ipynb", "cells": cells});
+    for (var i = 0; i < len(cells); i++) { await waitFor(cells[i]["id"]); }
+    return null;
+};
+
+var info = await endpoint.Call("wellplay/info", {});
+check("info", info["name"] == "aqua_wellplay");
+await endpoint.Call("files/delete", {"path": "test.ipynb"}).Catch(e => null);
+var created = await endpoint.Call("files/create", {"path": "test.ipynb", "kind": "notebook"});
+check("create notebook", created["path"] == "test.ipynb");
+var opened = await endpoint.Call("notebook/open", {"path": "test.ipynb"});
+check("open notebook", len(opened["notebook"]["cells"]) == 1 && opened["kernel"]["state"] == "idle");
+var listing = await endpoint.Call("files/list", {"path": ""});
+check("list", len(Array.Filter(listing, e => e["name"] == "test.ipynb" && e["kind"] == "notebook")) == 1);
+
+# 文字輸出與 Out[n]。 / Text output and Out[n].
+await run([{"id": "a", "source": src(["var x = 20;", "print(" + Q + "hello" + Q + ", x);", "x * 2 + 2"])}]);
+check("a ok", finished["a"] == "ok", finished["a"]);
+check("a text", textOf("a") == "hello 20" + NL, textOf("a"));
+var results = ofType("a", "execute_result");
+check("a result", len(results) == 1 && results[0]["data"]["text/plain"] == "42", dump("a"));
+
+# 歷史：b 看得到 a 的變數，a 的輸出不再出現。 / History: b sees a's variables; a's output is not repeated.
+await run([{"id": "b", "source": src(["print(" + Q + "x is" + Q + ", x);",
+    "Display.Show(Display.Markdown(" + Q + "# Title" + Q + "));",
+    "Display.Table([{" + Q + "n" + Q + ": 1, " + Q + "sq" + Q + ": 1}, {" + Q + "n" + Q + ": 2, " + Q + "sq" + Q + ": 4}])"])}]);
+check("b ok", finished["b"] == "ok", dump("b"));
+check("b text", textOf("b") == "x is 20" + NL, textOf("b"));
+var rich = ofType("b", "display_data");
+check("b markdown", len(rich) == 1 && rich[0]["data"]["text/markdown"] == "# Title", dump("b"));
+var table = ofType("b", "execute_result");
+check("b table", len(table) == 1 && len(table[0]["data"]["application/vnd.wellplay.table+json"]["rows"]) == 2, dump("b"));
+
+# 取代：重新執行 a 會換掉它的舊版本。 / Replacing: running a again replaces its old version.
+await run([{"id": "a", "source": "var x = 5;"}]);
+await run([{"id": "c", "source": "x"}]);
+var c = ofType("c", "execute_result");
+check("replace", len(c) == 1 && c[0]["data"]["text/plain"] == "5", dump("c"));
+
+# 編譯錯誤對應到儲存格的行與欄。 / Compile errors map to the cell's line and column.
+await run([{"id": "d", "source": src(["var ok = 1;", "var broken = ;"])}]);
+var errors = ofType("d", "error");
+check("compile error", finished["d"] == "error" && len(errors) == 1 && errors[0]["ename"] == "CompileError" &&
+    String.StartsWith(errors[0]["evalue"], "line 2, column 14"), dump("d"));
+
+# 執行期錯誤：之前的輸出保留，錯誤的儲存格不進入歷史。 / Runtime errors keep earlier output; the cell stays out of
+# the history.
+await run([{"id": "e", "source": src(["print(" + Q + "before" + Q + ");", "var zero = 0;", "var boom = 1 / zero;"])}]);
+var runtime = ofType("e", "error");
+check("runtime error", finished["e"] == "error" && textOf("e") == "before" + NL && len(runtime) == 1 && runtime[0]["ename"] == "RuntimeError", dump("e"));
+
+# 多個儲存格一次執行（Run All）：錯誤之後的儲存格被略過。 / Several cells at once (Run All): cells after an error
+# are skipped.
+await run([{"id": "f1", "source": "print(1);"}, {"id": "f2", "source": "var zero = 0; var q = 1 / zero;"}, {"id": "f3", "source": "print(3);"}]);
+check("run all", finished["f1"] == "ok" && finished["f2"] == "error" && finished["f3"] == "aborted" && textOf("f1") == "1" + NL,
+    Serialization.Json(finished));
+
+# 可更新的輸出與清除。 / Updatable outputs and clearing.
+await run([{"id": "g", "source": src(["Display.Show(Display.Progress(0, 10, " + Q + "work" + Q + "), " + Q + "p" + Q + ");",
+    "Display.Update(" + Q + "p" + Q + ", Display.Progress(10, 10, " + Q + "work" + Q + "));", "Display.Clear();"])}]);
+var kindsOf = Array.Map(Hash.Get(events, "g", []), e => e["kind"]);
+check("update and clear", finished["g"] == "ok" && Array.Contains(kindsOf, "update") && Array.Contains(kindsOf, "clear"), Serialization.Json(kindsOf));
+
+# 中斷正在執行的儲存格。 / Interrupting a running cell.
+finished = {};
+events = {};
+await endpoint.Call("kernel/execute", {"path": "test.ipynb", "cells": [{"id": "h", "source": src(["print(" + Q + "start" + Q + ");", "for (;;) { }"])}]});
+for (var t = 0; t < 400 && textOf("h") == ""; t++) { await Promise.Delay(50); }
+var interrupted = await endpoint.Call("kernel/interrupt", {"path": "test.ipynb"});
+await waitFor("h", 20000);
+var stop = ofType("h", "error");
+check("interrupt", interrupted["interrupted"] == true && finished["h"] == "error" && len(stop) == 1 && stop[0]["ename"] == "KeyboardInterrupt", dump("h"));
+
+# 重新啟動清除歷史。 / Restarting clears the history.
+await endpoint.Call("kernel/restart", {"path": "test.ipynb"});
+await run([{"id": "i", "source": "x"}]);
+check("restart", finished["i"] == "error", dump("i"));
+
+# 儲存與讀回。 / Saving and reading back.
+var notebook = opened["notebook"];
+var first = notebook["cells"][0];
+first["source"] = src(["print(" + Q + "saved" + Q + ");", "1 + 1"]);
+await endpoint.Call("notebook/save", {"path": "test.ipynb", "notebook": notebook});
+var again = await endpoint.Call("notebook/open", {"path": "test.ipynb"});
+check("save", again["notebook"]["cells"][0]["source"] == first["source"]);
+var raw = await endpoint.Call("files/read", {"path": "test.ipynb"});
+check("ipynb lines", String.Contains(raw["text"], "\"nbformat\": 4") && String.Contains(raw["text"], "\"1 + 1\""), raw["text"]);
+
+await endpoint.Call("files/delete", {"path": "test.ipynb"});
+endpoint.Close();
+if (failures == 0) { print("WELLPLAY_OK"); } else { print("FAILURES", failures); }
+var done = true;

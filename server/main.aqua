@@ -1,0 +1,180 @@
+##
+aqua_wellplay：星泉的筆記本伺服器（類似 JupyterLab）。在指定的資料夾上啟動網頁伺服器；瀏覽器中的前端（星泉寫成、
+編譯為網頁的 SaturnUI 應用程式）編輯筆記本，而儲存格在這台桌面上執行。
+aqua_wellplay: AquariusLang's notebook server, in the spirit of JupyterLab. It serves a folder over HTTP; the frontend
+in the browser (an AquariusLang SaturnUI app built for the web) edits notebooks, and cells run on this desktop.
+
+  aqua_wellplay [folder] [--port 8888] [--host 127.0.0.1] [--no-browser] [--token TEXT | --no-token]
+                [--aqua path/to/aqua] [--site path/to/site]
+##
+var Network = import("Network");
+var Files = import("Files");
+var Paths = import("Paths");
+var Application = import("Application");
+var Terminal = import("Terminal");
+var rpc = import("AquaJSONRPC");
+var workspaces = import("workspace.aqua");
+var notebooks = import("notebooks.aqua");
+var kernels = import("kernel.aqua");
+var protocol = import("protocol.aqua");
+
+var Version = "0.1.0";
+var log = function(text) { print("[WellPlay] " + text); return null; };
+
+# ---- 命令列 / The command line ----
+var usage = "aqua_wellplay " + Version + " — AquariusLang notebooks / 星泉筆記本
+
+Usage: aqua_wellplay [folder] [options]
+
+  folder              the folder to serve (default: the current folder) / 提供的資料夾（預設：目前的資料夾）
+  --port N            the port (default 8888; the next free one is used) / 連接埠
+  --host ADDRESS      the address to listen on (default 127.0.0.1) / 監聽位址
+  --no-browser        do not open a browser / 不開啟瀏覽器
+  --token TEXT        the access token in the URL (default: a random one) / 網址中的存取權杖
+  --no-token          no token (anyone who can reach the port can run code) / 不使用權杖
+  --aqua PATH         the aqua compiler cells are built with (default: the one next to this program, else PATH)
+  --site PATH         the frontend site (default: wellplay/site next to this program)
+  --help, --version";
+
+var arguments = Application.Arguments();
+var settings = {"folder": null, "port": 8888, "host": "127.0.0.1", "browser": true, "token": null, "aqua": null, "site": null};
+var problem = null;
+for (var i = 0; i < len(arguments); i++) {
+    var a = arguments[i];
+    var value = if (i + 1 < len(arguments)) { arguments[i + 1]; } else { null; };
+    if (a == "--help" || a == "-h") { print(usage); settings["exit"] = true; break; }
+    if (a == "--version") { print("aqua_wellplay " + Version); settings["exit"] = true; break; }
+    if (a == "--no-browser") { settings["browser"] = false; continue; }
+    if (a == "--no-token") { settings["token"] = ""; continue; }
+    if (a == "--port" || a == "--host" || a == "--token" || a == "--aqua" || a == "--site") {
+        if (value == null) { problem = a + " needs a value / 需要一個值"; break; }
+        var key = String.Slice(a, 2, len(a));
+        if (key == "port") {
+            var port = String.ParseInt(value);
+            if (port == null || port < 1 || port > 65535) { problem = "--port must be 1..65535"; break; }
+            settings["port"] = port;
+        } else { settings[key] = value; }
+        i++;
+        continue;
+    }
+    if (String.StartsWith(a, "--")) { problem = "Unknown option / 不明的選項: " + a; break; }
+    if (settings["folder"] != null) { problem = "Only one folder / 只能指定一個資料夾"; break; }
+    settings["folder"] = a;
+}
+
+# 這個程式所在的資料夾（散佈套件中與 aqua 同一層）。 / The folder holding this program (next to aqua in the package).
+var home = Paths.Parent(currWorkingDir);
+var exists = path => Files.Stat(Files.Resolve(path)).exists;
+var executable = if (isOSWindows()) { ".exe"; } else { ""; };
+
+var findAqua = function() {
+    if (settings["aqua"] != null) { return settings["aqua"]; }
+    var environment = Application.Environment("AQUA_WELLPLAY_AQUA");
+    if (environment != null && environment != "") { return environment; }
+    if (exists(home + "/aqua" + executable)) { return home + "/aqua" + executable; }
+    return "aqua";
+};
+# 散佈套件中是 wellplay/site 與 wellplay/kernel；在原始碼資料夾中是 frontend/dist 與 kernel。 / In the package:
+# wellplay/site and wellplay/kernel; in the source folder: frontend/dist and kernel.
+var findSite = function() {
+    if (settings["site"] != null) { return settings["site"]; }
+    var candidates = [home + "/wellplay/site", home + "/frontend/dist"];
+    for (var i = 0; i < len(candidates); i++) { if (exists(candidates[i] + "/index.html")) { return candidates[i]; } }
+    return null;
+};
+var findKernel = function() {
+    var candidates = [home + "/wellplay/kernel/display.aqua", home + "/kernel/display.aqua"];
+    for (var i = 0; i < len(candidates); i++) { if (exists(candidates[i])) { return candidates[i]; } }
+    return null;
+};
+var tokenOf = function() {
+    if (settings["token"] != null) { return settings["token"]; }
+    var bytes = Network.RandomBytes(16);
+    var digits = "0123456789abcdef";
+    var text = "";
+    for (var i = 0; i < len(bytes); i++) { text += digits[bytes[i] >> 4] + digits[bytes[i] & 15]; }
+    return text;
+};
+
+var openBrowser = function(url) {
+    var started = Network.Try(function() {
+        if (isOSWindows()) { return Terminal.Start("rundll32.exe", ["url.dll,FileProtocolHandler", url], {}); }
+        return Terminal.Start("xdg-open", [url], {});
+    });
+    if (!started.Success) { log("Open " + url + " in a browser / 請在瀏覽器開啟這個網址"); }
+    return null;
+};
+
+var serve = function() {
+    var folder = if (settings["folder"] == null) { "."; } else { settings["folder"]; };
+    var root = Files.Resolve(folder);
+    var info = Files.Stat(root);
+    if (!info.exists || info.kind != 1) { print("Not a folder / 不是資料夾: " + folder); return 1; }
+    var site = findSite();
+    if (site == null) { print("The frontend site was not found; pass --site / 找不到前端網站，請用 --site 指定"); return 1; }
+    var kernelFile = findKernel();
+    if (kernelFile == null) { print("The kernel's display module was not found / 找不到核心的顯示模組 (wellplay/kernel/display.aqua)"); return 1; }
+    var display = Files.ReadText(Files.Resolve(kernelFile), "utf-8");
+    var token = tokenOf();
+    var aqua = findAqua();
+
+    var workspace = workspaces.Create(root.id);
+    var kernel = kernels.Create({"aqua": aqua, "display": display, "workspace": workspace, "log": log});
+
+    # 連接埠被占用時往後找。 / The next port when one is taken.
+    var server = null;
+    var port = settings["port"];
+    for (var attempt = 0; attempt < 20 && server == null; attempt++) {
+        var address = settings["host"] + ":" + String.From(port + attempt);
+        var listening = Network.Try(() => Network.Listen(address));
+        if (listening.Success) { server = listening.Value; port = port + attempt; }
+    }
+    if (server == null) { print("No free port from / 沒有可用的連接埠，起始於 " + String.From(settings["port"])); return 1; }
+    var origin = "http://" + settings["host"] + ":" + String.From(port);
+    var local = "http://localhost:" + String.From(port);
+
+    # /rpc 只接受帶有權杖、來自這個網站的連線（防止其他網頁在這台電腦上執行程式碼）。 / /rpc only takes connections
+    # with the token from this site (so no other page can run code on this machine).
+    server.Use(function(request, writer, next) {
+        if (request.Path == "/rpc") {
+            var given = request.Query("token");
+            var from = request.Header("Origin");
+            var sameSite = from == null || from == "" || from == origin || from == local;
+            if ((token != "" && given != token) || !sameSite) { writer.Error(403, "Forbidden / 拒絕存取"); return null; }
+        }
+        next();
+        return null;
+    });
+
+    var services = protocol.Services(workspace: workspace, notebooks: notebooks, kernel: kernel, log: log,
+        info: {"name": "aqua_wellplay", "version": Version, "root": workspace.root, "rootName": Paths.Name(workspace.root),
+            "platform": Terminal.Platform, "aqua": aqua});
+    rpc.ServeWebSocket(server, "/rpc", function(endpoint, request) {
+        protocol.Register(endpoint, services);
+        return null;
+    });
+    server.Handle("GET /health", (request, writer) => writer.JSON({"ok": true, "sessions": kernel.Status()}));
+    # 前端網站（SaturnUI 應用程式的網頁輸出）。 / The frontend site (the SaturnUI app's web export).
+    server.Handle("GET /{path...}", function(request, writer) {
+        var path = request.Param("path");
+        if (path == "" ) { path = "index.html"; }
+        if (String.Contains(path, "..")) { writer.NotFound(); return null; }
+        writer.Header("Cache-Control", "no-cache");
+        writer.File(site + "/" + path);
+        return null;
+    });
+
+    var url = origin + "/" + if (token == "") { ""; } else { "?token=" + token; };
+    log("Serving / 提供 " + workspace.root);
+    log("Compiler / 編譯器 " + aqua);
+    log("Open / 開啟 " + url);
+    log("Press Ctrl+C to stop / 按 Ctrl+C 結束");
+    if (settings["browser"]) { openBrowser(url); }
+    server.Serve();
+    kernel.Shutdown();
+    return 0;
+};
+
+if (problem != null) { print(problem); print(""); print(usage); }
+elif (settings["exit"] != true) { serve(); }
+var finished = true;

@@ -1,0 +1,12 @@
+# aqua_wellplay: the notebook server (this project) and its web frontend (frontend/aqua.toml).
+manifest_version = 2
+
+[project]
+name = "aqua_wellplay"
+version = "0.1.0"
+entry = "server/main.aqua"
+sources = ["server/main.aqua", "server/workspace.aqua", "server/notebooks.aqua", "server/kernel.aqua", "server/protocol.aqua"]
+platforms = ["windows", "linux"]
+
+[dependencies]
+Aqua_JSON-RPC = { path = "libraries/Aqua_JSON-RPC", version = "1.0.0" }

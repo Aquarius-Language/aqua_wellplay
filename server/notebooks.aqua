@@ -1,0 +1,147 @@
+##
+筆記本檔案：Jupyter 的 nbformat 4（.ipynb），核心規格寫成 AquariusLang，所以 GitHub、JupyterLab 與 VS Code 都能打開。
+記憶體中每個儲存格的 source 是一個字串；寫入檔案時和 Jupyter 一樣拆成行，並以縮排的 JSON 寫出，方便版本控制。
+Notebook files: Jupyter's nbformat 4 (.ipynb) with an AquariusLang kernelspec, so GitHub, JupyterLab and VS Code open
+them too. In memory each cell's source is one string; files split it into lines and indent the JSON as Jupyter does,
+which keeps diffs readable.
+##
+var Serialization = import("Serialization");
+var Network = import("Network");
+
+var NL = String.FromCode(10);
+
+var Metadata = function() {
+    return {
+        "kernelspec": {"name": "aquarius", "display_name": "AquariusLang", "language": "aquarius"},
+        "language_info": {"name": "aquarius", "file_extension": ".aqua", "mimetype": "text/x-aquarius"},
+        "wellplay": {"version": 1}
+    };
+};
+
+# 儲存格的識別碼（nbformat 4.5）：8 個十六進位字元。 / A cell id (nbformat 4.5): 8 hexadecimal characters.
+var hex = "0123456789abcdef";
+var NewId = function() {
+    var bytes = Network.RandomBytes(4);
+    var text = "";
+    for (var i = 0; i < 4; i++) { text += hex[bytes[i] >> 4] + hex[bytes[i] & 15]; }
+    return text;
+};
+
+var CodeCell = function(source = "") {
+    return {"cell_type": "code", "id": NewId(), "metadata": {}, "source": source, "outputs": [], "execution_count": null};
+};
+var MarkdownCell = function(source = "") {
+    return {"cell_type": "markdown", "id": NewId(), "metadata": {}, "source": source};
+};
+var Empty = function() {
+    return {"cells": [CodeCell("")], "metadata": Metadata(), "nbformat": 4, "nbformat_minor": 5};
+};
+
+# source 可以是字串或行的陣列。 / A source is a string or an array of lines.
+var joined = function(value) {
+    if (value == null) { return ""; }
+    if (typeOf(value) == "array") { return String.Join(Array.Map(value, x => String.From(x)), ""); }
+    return String.From(value);
+};
+# Jupyter 的多行文字：每行保留結尾的換行，最後一行沒有。 / Jupyter's multiline text: each line keeps its newline
+# except the last.
+var lines = function(text) {
+    if (text == "") { return []; }
+    var parts = String.Split(text, NL);
+    var result = [];
+    for (var i = 0; i < len(parts); i++) {
+        if (i + 1 < len(parts)) { Array.Append(result, parts[i] + NL); }
+        elif (parts[i] != "") { Array.Append(result, parts[i]); }
+    }
+    return result;
+};
+
+# 文字輸出的 MIME 值在檔案中也是行的陣列。 / Text MIME values are line arrays in files too.
+var textual = function(mime) {
+    return String.StartsWith(mime, "text/") || mime == "image/svg+xml";
+};
+var outputIn = function(output) {
+    var o = Hash.Clone(output);
+    if (o["text"] != null) { o["text"] = joined(o["text"]); }
+    if (o["data"] != null) {
+        var data = Hash.Clone(o["data"]);
+        var keys = Hash.Keys(data);
+        for (var i = 0; i < len(keys); i++) { if (textual(keys[i]) || String.StartsWith(keys[i], "image/")) { data[keys[i]] = joined(data[keys[i]]); } }
+        o["data"] = data;
+    }
+    return o;
+};
+var outputOut = function(output) {
+    var o = Hash.Clone(output);
+    Hash.Delete(o, "transient");
+    if (o["text"] != null) { o["text"] = lines(o["text"]); }
+    if (o["data"] != null) {
+        var data = Hash.Clone(o["data"]);
+        var keys = Hash.Keys(data);
+        for (var i = 0; i < len(keys); i++) { if (textual(keys[i])) { data[keys[i]] = lines(data[keys[i]]); } }
+        o["data"] = data;
+    }
+    return o;
+};
+
+# 讀入的筆記本：缺少的欄位補齊，source 與輸出文字合成字串。 / A notebook read in: missing fields filled, sources and
+# output texts joined into strings.
+var Normalize = function(notebook) {
+    var cells = [];
+    var given = Hash.Get(notebook, "cells", []);
+    for (var i = 0; i < len(given); i++) {
+        var c = given[i];
+        var type = Hash.Get(c, "cell_type", "code");
+        var cell = {"cell_type": type, "id": Hash.Get(c, "id", NewId()), "metadata": Hash.Get(c, "metadata", {}), "source": joined(c["source"])};
+        if (type == "code") {
+            cell["outputs"] = Array.Map(Hash.Get(c, "outputs", []), outputIn);
+            cell["execution_count"] = c["execution_count"];
+        }
+        Array.Append(cells, cell);
+    }
+    var metadata = Hash.Get(notebook, "metadata", {});
+    var defaults = Metadata();
+    var keys = Hash.Keys(defaults);
+    for (var i = 0; i < len(keys); i++) { if (metadata[keys[i]] == null) { metadata[keys[i]] = defaults[keys[i]]; } }
+    return {"cells": cells, "metadata": metadata, "nbformat": 4, "nbformat_minor": 5};
+};
+
+var Parse = function(text) {
+    if (String.Trim(text) == "") { return Empty(); }
+    var parsed = Network.Try(() => Serialization.ParseJson(text));
+    if (!parsed.Success || typeOf(parsed.Value) != "hash") { return null; }
+    return Normalize(parsed.Value);
+};
+
+# ---- 寫出 / Writing ----
+# 縮排一格的 JSON（和 Jupyter 相同），鍵依字母排序。 / JSON indented by one space as Jupyter writes it, keys sorted.
+var pretty = function(value, indent) {
+    var type = typeOf(value);
+    var pad = String.Repeat(" ", indent + 1);
+    var close = String.Repeat(" ", indent);
+    if (type == "array") {
+        if (len(value) == 0) { return "[]"; }
+        var items = Array.Map(value, v => pad + pretty(v, indent + 1));
+        return "[" + NL + String.Join(items, "," + NL) + NL + close + "]";
+    }
+    if (type == "hash") {
+        if (len(value) == 0) { return "{}"; }
+        var keys = Array.Sort(Array.Map(Hash.Keys(value), k => String.From(k)));
+        var items = Array.Map(keys, k => pad + Serialization.Json(k) + ": " + pretty(value[k], indent + 1));
+        return "{" + NL + String.Join(items, "," + NL) + NL + close + "}";
+    }
+    return Serialization.Json(value);
+};
+
+var Format = function(notebook) {
+    var n = Normalize(notebook);
+    var cells = [];
+    for (var i = 0; i < len(n["cells"]); i++) {
+        var c = Hash.Clone(n["cells"][i]);
+        c["source"] = lines(c["source"]);
+        if (c["cell_type"] == "code") { c["outputs"] = Array.Map(c["outputs"], outputOut); }
+        Array.Append(cells, c);
+    }
+    n["cells"] = cells;
+    return pretty(n, 0) + NL;
+};

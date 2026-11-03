@@ -1,0 +1,117 @@
+##
+工作區：伺服器提供的資料夾。所有路徑都是相對於根目錄、以 / 分隔的路徑；不能離開根目錄。
+The workspace: the folder the server serves. Every path is relative to the root, separated by /, and cannot leave it.
+##
+var Files = import("Files");
+var Paths = import("Paths");
+var Network = import("Network");
+
+struct Entry { name; path; kind; size; modified }
+struct Workspace { root; Resolve; List; Read; Save; Create; Rename; Delete; Exists }
+
+# 檔案種類：資料夾、筆記本（.ipynb）、星泉腳本，或其他檔案。 / Kinds: directory, notebook (.ipynb), script, file.
+var kindOf = function(name, isDirectory) {
+    if (isDirectory) { return "directory"; }
+    var extension = String.Lower(Paths.Extension(name));
+    if (extension == ".ipynb") { return "notebook"; }
+    if (extension == ".aqua") { return "script"; }
+    return "file";
+};
+
+# 失敗的檔案操作成為 {"ok": 假, "error": 訊息}，而不是結束伺服器。 / A failing file operation becomes {"ok": false,
+# "error": message} instead of ending the server.
+var attempt = function(action) {
+    var outcome = Network.Try(action);
+    if (outcome.Success) { return {"ok": true, "value": outcome.Value}; }
+    return {"ok": false, "error": outcome.Error.Message};
+};
+
+var Create = function(root) {
+    var base = String.Replace(Paths.Normalize(root), "\\", "/");
+    if (len(base) > 1 && String.EndsWith(base, "/")) { base = String.Slice(base, 0, len(base) - 1); }
+
+    # 相對路徑 → 絕對路徑；離開根目錄、絕對路徑或磁碟代號都會被拒絕（null）。 / A relative path → an absolute one;
+    # leaving the root, absolute paths and drive letters give null.
+    var resolve = function(relative) {
+        var path = String.Replace(String.Trim(relative), "\\", "/");
+        if (String.Contains(path, ":") || String.StartsWith(path, "/")) { return null; }
+        var parts = String.Split(path, "/");
+        var kept = [];
+        for (var i = 0; i < len(parts); i++) {
+            var part = parts[i];
+            if (part == "" || part == ".") { continue; }
+            if (part == "..") { return null; }
+            Array.Append(kept, part);
+        }
+        if (len(kept) == 0) { return base; }
+        return base + "/" + String.Join(kept, "/");
+    };
+    var relativeOf = function(absolute) {
+        if (absolute == base) { return ""; }
+        return String.Slice(absolute, len(base) + 1, len(absolute));
+    };
+
+    var list = function(relative) {
+        var path = resolve(relative);
+        if (path == null) { return {"ok": false, "error": "Outside the workspace / 不在工作區內。"}; }
+        return attempt(function() {
+            var items = Files.Enumerate(Files.Resolve(path));
+            # 資料夾在前，名稱不分大小寫排序。 / Directories first, names sorted ignoring case.
+            var byKey = {};
+            var keys = [];
+            for (var i = 0; i < len(items); i++) {
+                var name = items[i].name;
+                # 隱藏檔（. 開頭）不列出，包括核心的暫存程式。 / Hidden files (starting with .) are not listed,
+                # the kernel's temporary programs included.
+                if (String.StartsWith(name, ".")) { continue; }
+                var info = Files.Stat(items[i]);
+                var isDirectory = info.kind == 1;
+                var entry = Entry(name: name, path: relativeOf(path + "/" + name), kind: kindOf(name, isDirectory),
+                    size: if (info.length == null) { 0; } else { info.length; }, modified: info.modified);
+                var key = (if (isDirectory) { "0"; } else { "1"; }) + String.Lower(name) + "/" + name;
+                byKey[key] = entry;
+                Array.Append(keys, key);
+            }
+            Array.Sort(keys);
+            var result = Array.Map(keys, k => byKey[k]);
+            return Array.Map(result, e => ({"name": e.name, "path": e.path, "kind": e.kind, "size": e.size, "modified": e.modified}));
+        });
+    };
+    var read = function(relative) {
+        var path = resolve(relative);
+        if (path == null) { return {"ok": false, "error": "Outside the workspace / 不在工作區內。"}; }
+        return attempt(() => Files.ReadText(Files.Resolve(path), "utf-8"));
+    };
+    var save = function(relative, text) {
+        var path = resolve(relative);
+        if (path == null || path == base) { return {"ok": false, "error": "Outside the workspace / 不在工作區內。"}; }
+        return attempt(() => Files.SaveText(Files.Resolve(path), text, "utf-8"));
+    };
+    var exists = function(relative) {
+        var path = resolve(relative);
+        if (path == null) { return false; }
+        return Files.Stat(Files.Resolve(path)).exists;
+    };
+    # 新檔案或資料夾（kind: "directory" 或 "file"），名稱已存在時失敗。 / A new file or directory; fails if it exists.
+    var create = function(relative, kind, text = "") {
+        var path = resolve(relative);
+        if (path == null || path == base) { return {"ok": false, "error": "Outside the workspace / 不在工作區內。"}; }
+        if (Files.Stat(Files.Resolve(path)).exists) { return {"ok": false, "error": "Already exists / 已經存在。"}; }
+        if (kind == "directory") { return attempt(() => Files.CreateDirectory(Files.Resolve(path))); }
+        return attempt(() => Files.SaveText(Files.Resolve(path), text, "utf-8"));
+    };
+    var rename = function(from, to) {
+        var source = resolve(from);
+        var target = resolve(to);
+        if (source == null || target == null || source == base || target == base) { return {"ok": false, "error": "Outside the workspace / 不在工作區內。"}; }
+        if (Files.Stat(Files.Resolve(target)).exists) { return {"ok": false, "error": "Already exists / 已經存在。"}; }
+        return attempt(() => Files.Move(Files.Resolve(source), Files.Resolve(target), false));
+    };
+    var remove = function(relative) {
+        var path = resolve(relative);
+        if (path == null || path == base) { return {"ok": false, "error": "Outside the workspace / 不在工作區內。"}; }
+        return attempt(() => Files.Delete(Files.Resolve(path), true));
+    };
+    return Workspace(root: base, Resolve: resolve, List: list, Read: read, Save: save, Create: create, Rename: rename,
+        Delete: remove, Exists: exists);
+};

@@ -1,0 +1,140 @@
+# 編輯器核心（所有平台，不需視窗）：以「互動」工作階段餵入事件，內建語言伺服器經 JSON-RPC 配對連線。
+# The editor core on every target without a window: events fed through an Interaction session, the built-in
+# language server connected through a JSON-RPC pair. Ends with EDITOR_OK.
+var ed = import("AquaEditor");
+var ix = import("Interaction");
+var json = import("Serialization");
+var failures = [];
+var check = function(name, actual, expected) {
+    if (json.Json(actual) != json.Json(expected)) { 陣列.追加(failures, name); print("FAIL", name, actual, "!=", expected); }
+};
+# 字串字面值不轉義 \n，以此換成換行。 / String literals keep \n as written; this makes it a newline.
+var nl = function(text) { return 字串.取代(text, "\\n", 字串.從字元碼(10)); };
+var settle = async function() { for (var i = 0; i < 5; i++) { await Promise.Delay(1); } };
+
+# 語法上色。 / Highlighting.
+var kinds = function(text) {
+    var tokens = ed.Tokenize(text)[0];
+    var result = [];
+    for (var i = 0; i < len(tokens); i++) { 陣列.追加(result, tokens[i][2]); }
+    return result;
+};
+check("tokens", kinds("變數 x: 整數 = 印出(\"嗨\", 3.5d); # 註解"), ["keyword", "identifier", "punctuation", "type", "operator", "builtin", "punctuation", "string", "punctuation", "number", "punctuation", "punctuation", "comment"]);
+check("block comment", ed.Tokenize(nl("a ## x\ny ## b"))[1][0][2], "comment");
+check("members", kinds("net.GetAsync(url).Body"), ["identifier", "operator", "function", "punctuation", "identifier", "punctuation", "operator", "property"]);
+
+# 內建伺服器的分析。 / The built-in server's analyses.
+check("brackets", 長度(ed.Diagnose(nl("var f = function() { print(1);\n"))), 1);
+var awaitDiagnostics = ed.Diagnose(nl("var f = function() { await Promise.Delay(1); };\nvar g = async function() { await Promise.Delay(1); };\nawait g();"));
+check("await outside async", [長度(awaitDiagnostics), awaitDiagnostics[0]["range"]["start"]["line"]], [1, 0]);
+check("clean", ed.Diagnose("var 等待 = 1; 執行緒.等待(t);"), []);
+var labels = function(items) { var r = []; for (var i = 0; i < len(items); i++) { 陣列.追加(r, items[i]["label"]); } return r; };
+check("complete keyword", 陣列.包含(labels(ed.Complete("pri", 0, 3)), "print"), true);
+check("complete members", 陣列.包含(labels(ed.Complete("var p = 承諾.", 0, 11)), "全部"), true);
+check("complete import", 陣列.包含(labels(ed.Complete(nl("var A = import(\"Array\");\nA.Ap"), 1, 4)), "Append"), true);
+check("complete declared", 陣列.包含(labels(ed.Complete(nl("var counter = 1;\ncou"), 1, 3)), "counter"), true);
+check("hover", 字串.包含(ed.Hover("等待 x;", 0, 1)["contents"]["value"], "Wait for a promise"), true);
+
+# 編輯器與事件。 / The editor and events.
+var editor = ed.CreateEditor({"text": "", "charWidth": 8, "lineHeight": 20});
+ed.Place(editor, 0, 0, 640, 400);
+var session = ix.Create();
+ed.Attach(editor, session);
+var capabilities = await ed.UseBuiltInLanguageServer(editor);
+check("capabilities", capabilities["hoverProvider"], true);
+# 一次一個字元，像打字一樣。 / One character at a time, as typing.
+var type = function(text) {
+    var characters = 字串.分割(text, "");
+    for (var i = 0; i < len(characters); i++) { session.Feed({"type": "text", "text": characters[i]}); session.Dispatch(); }
+};
+var key = function(code, mods) {
+    session.Feed({"type": "key", "key": code, "action": 1, "mods": mods});
+    session.Feed({"type": "key", "key": code, "action": 0, "mods": mods});
+    session.Dispatch();
+};
+type("var 數量 = (");
+check("auto close", ed.Text(editor), "var 數量 = ()");
+type("1 + 2)");
+check("step over", ed.Text(editor), "var 數量 = (1 + 2)");
+type(";");
+key(257, 0);
+type("if (數量 > 2) {");
+key(257, 0);
+check("indent", ed.Text(editor), nl("var 數量 = (1 + 2);\nif (數量 > 2) {\n    \n}"));
+type("pri");
+await settle();
+var model = ed.RenderModel(editor);
+check("completion shown", model["completion"] != null && 陣列.包含(labels(model["completion"]["items"]), "print"), true);
+key(257, 0);
+check("accepted", ed.Text(editor), nl("var 數量 = (1 + 2);\nif (數量 > 2) {\n    print()\n}"));
+check("cursor in call", ed.Cursor(editor), {"line": 2, "character": 10});
+await settle();
+check("signature", ed.RenderModel(editor)["signature"]["label"], "print(values...)");
+type("數");
+await settle();
+check("declared completion", 陣列.包含(labels(ed.RenderModel(editor)["completion"]["items"]), "數量"), true);
+key(256, 0);
+check("escape closes", ed.RenderModel(editor)["completion"], null);
+key(90, 2);
+check("undo typing", ed.Text(editor), nl("var 數量 = (1 + 2);\nif (數量 > 2) {\n    print()\n}"));
+key(89, 2);
+check("redo", 字串.包含(ed.Text(editor), "print(數)"), true);
+await settle();
+check("no diagnostics", ed.Diagnostics(editor), []);
+key(269, 2);
+type(")");
+await settle();
+check("diagnostic", 長度(ed.Diagnostics(editor)) > 0, true);
+key(259, 0);
+await settle();
+check("diagnostic cleared", ed.Diagnostics(editor), []);
+
+# 指標：按下放游標，雙擊選字，Shift 延伸。 / Pointer: press places the caret, double click selects a word.
+var gutter = ed.RenderModel(editor)["gutterWidth"];
+var at = function(line, character) { return [gutter + 6 + character * 8 + 2, line * 20 + 10]; };
+var p = at(0, 6);
+session.Feed({"type": "button", "button": 0, "action": 1, "x": p[0], "y": p[1], "time": 1.0d});
+session.Feed({"type": "button", "button": 0, "action": 0, "x": p[0], "y": p[1], "time": 1.05d});
+session.Feed({"type": "button", "button": 0, "action": 1, "x": p[0], "y": p[1], "time": 1.1d});
+session.Feed({"type": "button", "button": 0, "action": 0, "x": p[0], "y": p[1], "time": 1.15d});
+session.Dispatch();
+check("double click word", ed.SelectedText(editor), "數量");
+key(67, 2);
+key(262, 0);
+check("collapse right", ed.HasSelection(editor), false);
+
+# 輸入法組字：未確定的文字畫在游標處，後面的文字右移；按鍵屬於輸入法；確定後才插入。
+# Composition: the uncommitted text is drawn at the caret and pushes the rest right; keys belong to the input method.
+ed.SetCursor(editor, 0, 4);
+var before = ed.Text(editor);
+session.Feed({"type": "composition", "phase": "start"});
+session.Feed({"type": "composition", "text": "ㄒㄧㄥ", "cursor": 2});
+session.Dispatch();
+key(259, 0);
+var composing = ed.RenderModel(editor);
+var runs = composing["lines"][0]["runs"];
+var composed = 陣列.篩選(runs, function(r) { return r["kind"] == "composition"; });
+check("composition run", [長度(composed), composed[0]["text"], composing["composition"]["cursor"]], [1, "ㄒㄧㄥ", 2]);
+check("composition caret", composing["caret"]["x"] > composed[0]["x"], true);
+check("composition keys", ed.Text(editor), before);
+session.Feed({"type": "composition", "phase": "end"});
+session.Feed({"type": "text", "text": "星"});
+session.Dispatch();
+check("committed", 字串.切片(ed.Text(editor), 0, 7), "var 星數量");
+check("composition over", ed.RenderModel(editor)["composition"], null);
+key(90, 2);
+
+# 繪製：畫筆收到矩形、文字與線。 / Painting: the painter gets rects, texts and lines.
+var counts = {"rect": 0, "text": 0, "line": 0};
+var painter = {
+    "rect": function(x, y, w, h, c) { counts["rect"] = counts["rect"] + 1; },
+    "text": function(x, y, t, c) { counts["text"] = counts["text"] + 1; },
+    "line": function(x1, y1, x2, y2, c) { counts["line"] = counts["line"] + 1; }
+};
+ed.Paint(ed.RenderModel(editor), painter);
+check("painted", counts["rect"] > 3 && counts["text"] > 10, true);
+var lines = ed.RenderModel(editor)["lines"];
+check("model lines", [長度(lines), lines[0]["number"], lines[0]["runs"][0]["kind"]], [4, 1, "keyword"]);
+await ed.DisconnectLanguageServer(editor);
+
+if (len(failures) == 0) { print("EDITOR_OK"); } else { print("EDITOR_FAIL", failures); }

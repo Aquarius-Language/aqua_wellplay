@@ -1,0 +1,111 @@
+##
+LSP 用戶端：在 JSON-RPC 端點（Aqua_JSON-RPC）上與任何語言伺服器對話：initialize、文件開啟與增量變更、診斷、
+自動完成、說明與參數提示。回應晚到時（文件已改）會被捨棄。
+The LSP client: talks to any language server over a JSON-RPC endpoint (Aqua_JSON-RPC): initialize, didOpen and
+incremental didChange, diagnostics, completion, hover and signature help. Late answers for an older text are dropped.
+##
+var String = import("String");
+var Array = import("Array");
+var editors = null;
+var buffers = null;
+var Initialize = function(editorModule, bufferModule) { editors = editorModule; buffers = bufferModule; };
+
+var _position = function(p) { return {"line": p.line, "character": p.character}; };
+
+# 說明內容（MarkupContent、MarkedString 或其陣列）轉成純文字。 / Hover contents as plain text.
+var HoverText = function(contents) {
+    if (contents == null) { return ""; }
+    if (typeOf(contents) == "string") { return contents; }
+    if (typeOf(contents) == "array") {
+        var parts = [];
+        for (var i = 0; i < len(contents); i++) { Array.Append(parts, HoverText(contents[i])); }
+        return String.Join(parts, String.FromCode(10));
+    }
+    if (contents["value"] != null) { return contents["value"]; }
+    return "";
+};
+
+# 連接編輯器與語言伺服器的端點；承諾在 initialize 完成、文件開啟後得到伺服器的能力。
+# Connect an editor to a language server's endpoint; a promise of the server's capabilities once initialized and
+# the document opened.
+var Connect = async function(editor, endpoint, options) {
+    var init = await endpoint.Call("initialize", {
+        "processId": null, "rootUri": null, "clientInfo": {"name": "AquaEditor", "version": "1.0.0"},
+        "capabilities": {"textDocument": {
+            "synchronization": {"didSave": false},
+            "completion": {"completionItem": {"snippetSupport": true}},
+            "hover": {"contentFormat": ["plaintext", "markdown"]},
+            "signatureHelp": {"signatureInformation": {"documentationFormat": ["plaintext"]}},
+            "publishDiagnostics": {"relatedInformation": false}}}});
+    var capabilities = init["capabilities"];
+    if (capabilities == null) { capabilities = {}; }
+    # 文件同步：2 增量，1 完整。 / Document sync: 2 incremental, 1 full.
+    var sync = capabilities["textDocumentSync"];
+    var syncKind = 1;
+    if (typeOf(sync) == "integer") { syncKind = sync; }
+    if (typeOf(sync) == "hash" && sync["change"] != null) { syncKind = sync["change"]; }
+    endpoint.Notify("initialized", {});
+    var version = 1;
+    var uri = editor.uri;
+    endpoint.OnNotification("textDocument/publishDiagnostics", function(params) {
+        if (params["uri"] == uri) { editors.SetDiagnostics(editor, params["diagnostics"]); }
+    });
+    endpoint.Notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": editor.languageId, "version": version, "text": editors.Text(editor)}});
+    var askCompletion = async function(p, trigger) {
+        var context = {"triggerKind": 1};
+        if (trigger == ".") { context = {"triggerKind": 2, "triggerCharacter": "."}; }
+        var asked = editor.buffer.version;
+        var result = await endpoint.Call("textDocument/completion", {"textDocument": {"uri": uri}, "position": _position(p), "context": context})
+            .Catch(function(error) { return null; });
+        if (result == null || editor.buffer.version != asked) { return false; }
+        var items = result;
+        if (typeOf(result) == "hash") { items = result["items"]; }
+        if (items == null) { items = []; }
+        return editors.SetCompletion(editor, p, items);
+    };
+    var askHover = async function(p) {
+        var result = await endpoint.Call("textDocument/hover", {"textDocument": {"uri": uri}, "position": _position(p)}).Catch(function(error) { return null; });
+        if (result == null) { return editors.SetHover(editor, p, ""); }
+        return editors.SetHover(editor, p, HoverText(result["contents"]));
+    };
+    var askSignature = async function(p) {
+        var result = await endpoint.Call("textDocument/signatureHelp", {"textDocument": {"uri": uri}, "position": _position(p)}).Catch(function(error) { return null; });
+        if (result == null || len(result["signatures"]) == 0) { editors.SetSignature(editor, null); return false; }
+        var signature = result["signatures"][0];
+        var doc = signature["documentation"];
+        if (typeOf(doc) == "hash") { doc = doc["value"]; }
+        editors.SetSignature(editor, {"label": signature["label"], "documentation": doc});
+        return true;
+    };
+    var changed = function(changes) {
+        version++;
+        var contentChanges = [];
+        if (syncKind == 2) {
+            for (var i = 0; i < len(changes); i++) {
+                var c = changes[i];
+                Array.Append(contentChanges, {"range": {"start": _position(c.start), "end": _position(c.end)}, "text": c.text});
+            }
+        } else { contentChanges = [{"text": editors.Text(editor)}]; }
+        endpoint.Notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": version}, "contentChanges": contentChanges});
+        return true;
+    };
+    editor.client = {
+        "endpoint": endpoint, "capabilities": capabilities,
+        "changed": changed,
+        "complete": function(p, trigger) { askCompletion(p, trigger).Catch(function(e) { return false; }); return true; },
+        "hover": function(p) { askHover(p).Catch(function(e) { return false; }); return true; },
+        "signature": function(p) { askSignature(p).Catch(function(e) { return false; }); return true; }
+    };
+    return capabilities;
+};
+
+# 結束：shutdown 然後 exit。 / Shut down: shutdown, then exit.
+var Disconnect = async function(editor) {
+    if (editor.client == null) { return false; }
+    var endpoint = editor.client["endpoint"];
+    editor.client = null;
+    endpoint.Notify("textDocument/didClose", {"textDocument": {"uri": editor.uri}});
+    await endpoint.Call("shutdown", null).Catch(function(error) { return null; });
+    endpoint.Notify("exit", null);
+    return true;
+};

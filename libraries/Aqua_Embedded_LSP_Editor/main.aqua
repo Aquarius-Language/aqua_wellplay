@@ -1,0 +1,214 @@
+##
+Aqua_Embedded_LSP_Editor 1.0.0 — 星泉內嵌程式碼編輯器 / An embeddable code editor for AquariusLang.
+
+跨平台、與繪圖無關、可內嵌的文字編輯器，支援語言伺服器協定（LSP，透過 Aqua_JSON-RPC）：語法上色、自動完成與建議、
+說明、參數提示、診斷。輸入使用「互動」函式庫，所以點擊次數、拖曳選取、捲動慣性、右鍵選單、快捷鍵都和各平台的
+原生程式一樣；輸出是繪製模型，任何繪圖函式庫（Processing、WGPU、OpenGL...）都能畫出來。
+A cross-platform, graphics-independent, embeddable text editor with Language Server Protocol support (through
+Aqua_JSON-RPC): highlighting, completion and suggestions, hover, signature help and diagnostics. Input goes through
+the Interaction library, so click counts, drag selection, scrolling momentum, context menus and shortcuts follow each
+platform's own applications; output is a render model any graphics library can draw.
+
+    var editorLibrary = import("AquaEditor");
+    var editor = editorLibrary.CreateEditor({"text": "print(\"hello\");"});
+    editorLibrary.Place(editor, 0, 0, 800, 600);
+    await editorLibrary.UseBuiltInLanguageServer(editor);         # 或 ConnectLanguageServer(editor, endpoint)
+    editorLibrary.Attach(editor, import("Interaction").Attach(window));
+    # 每個影格 / every frame:
+    editorLibrary.Update(editor, seconds);
+    editorLibrary.Paint(editorLibrary.RenderModel(editor), painter);   # painter: rect / text / line 函式
+
+所有公開函式皆提供繁體中文與英文名稱。 / Every public function has Traditional Chinese and English names.
+##
+var rpc = import("AquaJSONRPC");
+var language = import("src/language.aqua");
+var highlight = import("src/highlight.aqua");
+var buffers = import("src/buffer.aqua");
+var editors = import("src/editor.aqua");
+var server = import("src/server.aqua");
+var client = import("src/client.aqua");
+highlight.Initialize(language);
+editors.Initialize(buffers, highlight);
+server.Initialize(language, highlight, buffers);
+client.Initialize(editors, buffers);
+
+var 版本, Version = function() { "1.0.0"; };
+
+# ---- 編輯器 / Editor ----
+# 選項：文字/text、行高/lineHeight、字寬/charWidth、量測/measure(文字)→寬度、縮排寬度/tabSize、網址/uri、語言/languageId、
+# 唯讀/readOnly、主題/theme、剪貼簿/clipboard {"get", "set"}、自動配對/autoClose。
+# Options: text, lineHeight, charWidth, measure(text) → width, tabSize, uri, languageId, readOnly, theme, clipboard,
+# autoClose.
+var 建立編輯器, CreateEditor = function(options) { return editors.Create(options); };
+var 文字, Text = function(editor) { return editors.Text(editor); };
+var 設定文字, SetText = function(editor, text) { return editors.SetText(editor, text); };
+var 放置, Place = function(editor, left, top, width, height) { return editors.Place(editor, left, top, width, height); };
+var 處理事件, HandleEvent = function(editor, event) { return editors.HandleEvent(editor, event); };
+var 附加, Attach = function(editor, session) { return editors.Attach(editor, session); };
+var 更新, Update = function(editor, seconds) { return editors.Update(editor, seconds); };
+var 繪製模型, RenderModel = function(editor) { return editors.RenderModel(editor); };
+var 插入, Insert = function(editor, text) { return editors.Insert(editor, text); };
+var 打字, Type = function(editor, text) { return editors.Type(editor, text); };
+var 選取, Select = function(editor, startLine, startCharacter, endLine, endCharacter) {
+    return editors.Select(editor, buffers.Pos(startLine, startCharacter), buffers.Pos(endLine, endCharacter));
+};
+var 全選, SelectAll = function(editor) { return editors.SelectAll(editor); };
+var 選取文字, SelectedText = function(editor) { return editors.SelectedText(editor); };
+var 有選取, HasSelection = function(editor) { return editors.HasSelection(editor); };
+var 游標, Cursor = function(editor) { return {"line": editor.cursor.line, "character": editor.cursor.character}; };
+var 設定游標, SetCursor = function(editor, line, character) { return editors.SetCursor(editor, buffers.Pos(line, character), false); };
+var 復原, Undo = function(editor) { return editors.Undo(editor); };
+var 重做, Redo = function(editor) { return editors.Redo(editor); };
+var 執行命令, RunCommand = function(editor, command) { return editors.RunCommand(editor, command); };
+var 當變更, OnChange = function(editor, callback) { return editors.OnChange(editor, callback); };
+var 當命令, OnCommand = function(editor, callback) { return editors.OnCommand(editor, callback); };
+var 設定主題, SetTheme = function(editor, theme) { return editors.SetTheme(editor, theme); };
+var 設定唯讀, SetReadOnly = function(editor, readOnly) { return editors.SetReadOnly(editor, readOnly); };
+var 設定焦點, SetFocus = function(editor, focused) { editor.focused = focused; return true; };
+var 診斷, Diagnostics = function(editor) { return editor.diagnostics; };
+var 設定診斷, SetDiagnostics = function(editor, diagnostics) { return editors.SetDiagnostics(editor, diagnostics); };
+var 文字寬度, TextWidth = function(editor, text) { return editors.TextWidth(editor, text); };
+var 淺色主題, LightTheme = function() { return editors.LightTheme; };
+var 深色主題, DarkTheme = function() { return editors.DarkTheme; };
+
+# ---- 語法上色 / Highlighting ----
+# 文字每一行的記號 [起點, 終點, 種類]。 / The tokens [start, end, kind] of each line of a text.
+var 上色, Tokenize = function(text) { return highlight.Tokenize(buffers.Create(text).lines); };
+
+# ---- 語言伺服器 / Language servers ----
+# 在任何 JSON-RPC 端點上提供內建的 AquariusLang 語言伺服器（例如 WebSocket 服務的每條連線）。
+# Serve the built-in AquariusLang language server on any JSON-RPC endpoint (e.g. each connection of a WebSocket
+# service).
+var 提供語言伺服器, ServeLanguageServer = function(endpoint) { return server.Serve(endpoint); };
+# 讓編輯器使用某個語言伺服器的端點；承諾得到伺服器的能力。 / Use a language server's endpoint; a promise of its
+# capabilities.
+var 連接語言伺服器, ConnectLanguageServer = async function(editor, endpoint) { return await client.Connect(editor, endpoint, null); };
+# 在同一個程式內執行內建語言伺服器（所有平台，不需網路）。 / Run the built-in server in-process (every target).
+var 使用內建語言伺服器, UseBuiltInLanguageServer = async function(editor) {
+    var pair = rpc.CreatePair();
+    server.Serve(pair[1]);
+    return await client.Connect(editor, pair[0], null);
+};
+var 中斷語言伺服器, DisconnectLanguageServer = async function(editor) { return await client.Disconnect(editor); };
+# 直接呼叫內建伺服器的分析（不經 LSP）。 / The built-in server's analyses, without LSP.
+var 分析診斷, Diagnose = function(text) { return server.Diagnose(buffers.Create(text).lines); };
+var 建議, Complete = function(text, line, character) { return server.Complete(buffers.Create(text).lines, line, character); };
+var 說明, Hover = function(text, line, character) { return server.Hover(buffers.Create(text).lines, line, character); };
+
+# ---- 繪製 / Painting ----
+# 用任何繪圖函式庫畫出繪製模型。畫筆是雜湊表：rect(x, y, 寬, 高, [r,g,b]) 畫填色矩形、text(x, y, 文字, [r,g,b]) 以左上角
+# 畫文字、line(x1, y1, x2, y2, [r,g,b]) 畫線，可選 clip(x, y, 寬, 高) / unclip() 限制繪製範圍。
+# Paint a render model with any graphics library. The painter is a hash: rect(x, y, w, h, [r,g,b]),
+# text(x, y, text, [r,g,b]) drawn from its top left, line(x1, y1, x2, y2, [r,g,b]), optional clip(x, y, w, h) / unclip().
+var 繪製, Paint = function(model, painter) {
+    var theme = model["theme"];
+    var rect = painter["rect"];
+    var text = painter["text"];
+    var line = painter["line"];
+    var color = function(kind) {
+        var c = theme[kind];
+        if (c == null) { c = theme["text"]; }
+        return c;
+    };
+    if (painter["clip"] != null) { painter["clip"](model["left"], model["top"], model["width"], model["height"]); }
+    rect(model["left"], model["top"], model["width"], model["height"], theme["background"]);
+    var lines = model["lines"];
+    var lineHeight = model["lineHeight"];
+    for (var i = 0; i < len(lines); i++) {
+        if (lines[i]["current"] && model["focused"]) { rect(model["left"], lines[i]["y"], model["width"], lineHeight, theme["currentLine"]); }
+    }
+    var selections = model["selections"];
+    for (var i = 0; i < len(selections); i++) {
+        var s = selections[i];
+        rect(s["x"], s["y"], s["width"], s["height"], theme["selection"]);
+    }
+    for (var i = 0; i < len(lines); i++) {
+        var runs = lines[i]["runs"];
+        for (var r = 0; r < len(runs); r++) {
+            if (runs[r]["kind"] != "text" || 字串.修剪(runs[r]["text"]) != "") { text(runs[r]["x"], lines[i]["y"], runs[r]["text"], color(runs[r]["kind"])); }
+        }
+    }
+    var marks = model["diagnostics"];
+    for (var i = 0; i < len(marks); i++) {
+        var m = marks[i];
+        var c = color(m["severity"]);
+        # 波浪底線。 / A squiggle.
+        var steps = int(m["width"] / 4.0d);
+        if (steps < 1) { steps = 1; }
+        for (var k = 0; k < steps; k++) {
+            var x0 = m["x"] + k * 4.0d;
+            var up = k % 2 == 0;
+            if (up) { line(x0, m["y"] + 1.0d, x0 + 4.0d, m["y"] - 1.0d, c); } else { line(x0, m["y"] - 1.0d, x0 + 4.0d, m["y"] + 1.0d, c); }
+        }
+    }
+    # 輸入法組字中的文字加底線。 / Text being composed by an input method is underlined.
+    var composition = model["composition"];
+    if (composition != null) { rect(composition["x"], composition["y"] + composition["height"] - 3.0d, composition["width"], 1.5d, color("composition")); }
+    var caret = model["caret"];
+    if (caret["visible"]) { rect(caret["x"], caret["y"], 2, caret["height"], theme["caret"]); }
+    # 行號欄（蓋在文字上，水平捲動時不動）。 / The line numbers (over the text, fixed while scrolling sideways).
+    rect(model["left"], model["top"], model["gutterWidth"], model["height"], theme["gutter"]);
+    for (var i = 0; i < len(lines); i++) {
+        var number = 字串.轉文字(lines[i]["number"]);
+        var kind = "lineNumber";
+        if (lines[i]["current"]) { kind = "text"; }
+        text(model["left"] + 6.0d, lines[i]["y"], number, color(kind));
+    }
+    for (var i = 0; i < len(marks); i++) {
+        rect(model["left"] + 1.0d, marks[i]["y"] - lineHeight + 4.0d, 3.0d, lineHeight - 4.0d, color(marks[i]["severity"]));
+    }
+    var bars = [model["verticalBar"], model["horizontalBar"]];
+    for (var i = 0; i < 2; i++) {
+        var b = bars[i];
+        if (b.visible) {
+            rect(b.x, b.y, b.width, b.height, theme["gutter"]);
+            rect(b.thumbX, b.thumbY, b.thumbWidth, b.thumbHeight, theme["lineNumber"]);
+        }
+    }
+    if (painter["unclip"] != null) { painter["unclip"](); }
+    # 浮動視窗：參數提示、說明、自動完成、右鍵選單。 / Popups: signature, hover, completion, context menu.
+    var popup = function(x, y, lines, selected) {
+        var size = editors.PopupSize(lines, lineHeight);
+        var width = size[0];
+        var height = size[1];
+        rect(x - 1.0d, y - 1.0d, width + 2.0d, height + 2.0d, theme["popupBorder"]);
+        rect(x, y, width, height, theme["popup"]);
+        for (var i = 0; i < len(lines); i++) {
+            if (i == selected) { rect(x, y + 3.0d + i * (lineHeight + 2.0d), width, lineHeight + 2.0d, theme["popupSelected"]); }
+            text(x + 8.0d, y + 4.0d + i * (lineHeight + 2.0d), lines[i], theme["text"]);
+        }
+    };
+    var signature = model["signature"];
+    if (signature != null) {
+        var rows = [signature["label"]];
+        if (signature["documentation"] != null && signature["documentation"] != "") { 陣列.追加(rows, signature["documentation"]); }
+        popup(signature["x"], signature["y"] - len(rows) * (lineHeight + 2.0d) + lineHeight, rows, -1);
+    }
+    var hover = model["hover"];
+    if (hover != null) { popup(hover["x"], hover["y"], 字串.分割(hover["text"], 字串.從字元碼(10)), -1); }
+    var completion = model["completion"];
+    if (completion != null) {
+        var visible = editors.CompletionRows(completion);
+        popup(completion["x"], completion["y"], visible[0], completion["selected"] - visible[1]);
+    }
+    var menu = model["menu"];
+    if (menu.open) {
+        var items = menu.items;
+        var y = menu.y;
+        var height = 0.0d;
+        for (var i = 0; i < len(items); i++) { if (items[i].separator) { height += menu.separatorHeight; } else { height += menu.itemHeight; } }
+        rect(menu.x - 1.0d, menu.y - 1.0d, menu.width + 2.0d, height + 2.0d, theme["popupBorder"]);
+        rect(menu.x, menu.y, menu.width, height, theme["popup"]);
+        for (var i = 0; i < len(items); i++) {
+            var item = items[i];
+            if (item.separator) { line(menu.x + 6.0d, y + menu.separatorHeight / 2.0d, menu.x + menu.width - 6.0d, y + menu.separatorHeight / 2.0d, theme["popupBorder"]); y += menu.separatorHeight; continue; }
+            if (i == menu.highlighted) { rect(menu.x, y, menu.width, menu.itemHeight, theme["popupSelected"]); }
+            var c = theme["text"];
+            if (!item.enabled) { c = theme["lineNumber"]; }
+            text(menu.x + 10.0d, y + (menu.itemHeight - lineHeight) / 2.0d, item.label, c);
+            if (item.shortcut != null) { text(menu.x + menu.width - 70.0d, y + (menu.itemHeight - lineHeight) / 2.0d, item.shortcut, theme["lineNumber"]); }
+            y += menu.itemHeight;
+        }
+    }
+    return true;
+};
