@@ -1,0 +1,176 @@
+##
+WellPlay 的淺色與深色主題：水瓶座的青藍到紫羅蘭漸層、柔和的陰影與圓角。調色盤同時提供給 SaturnUI（Theme 與樣式表）、
+程式碼編輯器（語法顏色）與圖表。
+WellPlay's light and dark themes: Aquarius' aqua-to-violet gradient, soft shadows and round corners. Each palette feeds
+SaturnUI (a Theme and a style sheet), the code editor (syntax colors) and the charts.
+##
+var UI = import("SaturnUI");
+
+struct Palette {
+    mode; background; backdrop; surface; raised; sunken; hover; text; muted; faint; border; strong;
+    primary; primarySoft; onPrimary; accent; gradient; success; warning; danger; dangerSoft; code; selection; shadow; series
+}
+
+var Light = Palette(mode: "light",
+    background: "#eef3f9", backdrop: {"from": "#f6f9fd", "to": "#e8eef8", "angle": 160},
+    surface: "#ffffff", raised: "#ffffff", sunken: "#f5f8fc", hover: "#eef4fb",
+    text: "#142033", muted: "#5d6b82", faint: "#93a0b4", border: "#dde5f0", strong: "#c4d0e0",
+    primary: "#0b8fa8", primarySoft: "#0b8fa81f", onPrimary: "#ffffff", accent: "#7357ff",
+    gradient: {"from": "#11b5cf", "to": "#7357ff", "angle": 90},
+    success: "#14a36b", warning: "#d98a00", danger: "#d64545", dangerSoft: "#d6454514",
+    code: "#f7f9fc", selection: "#c8e6f6", shadow: "#1b2a4a1a",
+    series: ["#11a6c4", "#7357ff", "#f2994a", "#27ae60", "#eb5757", "#9b51e0", "#2d9cdb", "#c2a400"]);
+
+var Dark = Palette(mode: "dark",
+    background: "#0a1020", backdrop: {"from": "#0c1426", "to": "#080c18", "angle": 160},
+    surface: "#111a2e", raised: "#16213a", sunken: "#0c1424", hover: "#1a2742",
+    text: "#e4ecf8", muted: "#93a3bf", faint: "#5f6f8c", border: "#22304d", strong: "#2f4066",
+    primary: "#3ad7ee", primarySoft: "#3ad7ee24", onPrimary: "#04121c", accent: "#a58bff",
+    gradient: {"from": "#22d3ee", "to": "#a58bff", "angle": 90},
+    success: "#3ddc97", warning: "#f5b84a", danger: "#ff6b7a", dangerSoft: "#ff6b7a1c",
+    code: "#0d1628", selection: "#1f4a6b", shadow: "#00000066",
+    series: ["#3ad7ee", "#a58bff", "#ffb86b", "#5ee6a0", "#ff7a8a", "#d18bff", "#6cb6ff", "#f2d45c"]);
+
+var Of = dark => if (dark) { Dark; } else { Light; };
+
+var Mono = "monospace";
+var CodeSize = 13;
+var LineHeight = 20;
+
+# "#rrggbb" → [r, g, b]（編輯器用 RGB 陣列）。 / "#rrggbb" → [r, g, b] (the editor takes RGB arrays).
+var digit = c => String.Find("0123456789abcdef", String.Lower(c));
+var RGB = function(hex) {
+    var h = String.Slice(hex, 1, 7);
+    return [digit(h[0]) * 16 + digit(h[1]), digit(h[2]) * 16 + digit(h[3]), digit(h[4]) * 16 + digit(h[5])];
+};
+
+# 程式碼編輯器的主題（與儲存格的底色一致）。 / The code editor's theme, matching the cell's background.
+var EditorTheme = function(p) {
+    var dark = p.mode == "dark";
+    var c = hex => RGB(hex);
+    return {
+        "background": c(p.code), "text": c(p.text), "gutter": c(p.code), "lineNumber": c(p.faint),
+        "currentLine": c(if (dark) { "#13203a"; } else { "#eef5fc"; }), "selection": c(p.selection), "caret": c(p.primary),
+        "keyword": c(if (dark) { "#c792ea"; } else { "#8b3fd9"; }), "constant": c(if (dark) { "#ff9e64"; } else { "#c2410c"; }),
+        "type": c(if (dark) { "#7dcfff"; } else { "#0b7fa0"; }), "string": c(if (dark) { "#a5e075"; } else { "#2f8f2f"; }),
+        "number": c(if (dark) { "#ff9e64"; } else { "#c2410c"; }), "comment": c(if (dark) { "#5f7396"; } else { "#8792a6"; }),
+        "function": c(if (dark) { "#82aaff"; } else { "#2459d1"; }), "builtin": c(if (dark) { "#3ad7ee"; } else { "#0b8fa8"; }),
+        "module": c(if (dark) { "#3ad7ee"; } else { "#0b8fa8"; }), "property": c(if (dark) { "#b4c6ef"; } else { "#34507a"; }),
+        "identifier": c(p.text), "operator": c(if (dark) { "#89ddff"; } else { "#5d6b82"; }), "punctuation": c(p.muted),
+        "error": c(p.danger), "warning": c(p.warning), "information": c(p.primary),
+        "popup": c(p.raised), "popupBorder": c(p.strong), "popupSelected": c(if (dark) { "#1f3b5c"; } else { "#dcefff"; })
+    };
+};
+
+var SaturnTheme = function(p) {
+    return UI.Theme(mode: p.mode, primary: p.primary, primaryHover: p.accent, primaryPressed: p.accent, primarySoft: p.primarySoft,
+        onPrimary: p.onPrimary, background: p.background, surface: p.surface, surfaceHover: p.hover, text: p.text, muted: p.muted,
+        border: p.border, danger: p.danger, radius: 10, spacing: 8, fontFamily: "sans-serif", fontSize: 14);
+};
+
+# 應用程式的樣式表：類別名稱寫在各個視圖中。 / The app's style sheet; the views name these classes.
+var Sheet = function(p) {
+    var soft = {"y": 2, "blur": 14, "color": p.shadow};
+    var lifted = {"y": 10, "blur": 30, "color": p.shadow};
+    return {
+        "app": {"flexGrow": 1, "background": p.backdrop, "color": p.text},
+        "topbar": {"flexDirection": "row", "alignItems": "center", "height": 54, "paddingHorizontal": 14, "gap": 10,
+            "background": p.surface, "borderBottomWidth": 1, "borderColor": p.border, "shadow": {"y": 1, "blur": 8, "color": p.shadow}},
+        "brandMark": {"width": 30, "height": 30, "borderRadius": 9, "background": p.gradient, "alignItems": "center",
+            "justifyContent": "center", "shadow": {"y": 3, "blur": 10, "color": p.primarySoft}},
+        "brand": {"fontSize": 17, "fontWeight": 800, "color": p.text},
+        "brandSub": {"fontSize": 11, "color": p.muted},
+        "toolbar": {"flexDirection": "row", "alignItems": "center", "gap": 2, "padding": 3, "borderRadius": 12,
+            "background": p.sunken, "borderWidth": 1, "borderColor": p.border},
+        "tool": {"flexDirection": "row", "alignItems": "center", "gap": 6, "height": 32, "paddingHorizontal": 10,
+            "borderRadius": 9, "cursor": "pointer", "color": p.muted, "transition": 120, "fontSize": 13, "fontWeight": 600},
+        "tool:hover": {"background": p.hover, "color": p.text},
+        "tool:pressed": {"scale": 0.96d},
+        "tool.primary": {"background": p.gradient, "color": "#ffffff", "shadow": {"y": 2, "blur": 8, "color": p.primarySoft}},
+        "tool.primary:hover": {"opacity": 0.9d, "color": "#ffffff"},
+        "tool.danger:hover": {"background": p.dangerSoft, "color": p.danger},
+        "pill": {"flexDirection": "row", "alignItems": "center", "gap": 7, "height": 28, "paddingHorizontal": 11,
+            "borderRadius": 14, "background": p.sunken, "borderWidth": 1, "borderColor": p.border, "fontSize": 12, "color": p.muted},
+        "sidebar": {"width": 264, "minHeight": 0, "background": p.surface, "borderRightWidth": 1, "borderColor": p.border, "padding": 12, "gap": 10},
+        "sideTitle": {"fontSize": 11, "fontWeight": 700, "color": p.faint},
+        "crumbs": {"flexDirection": "row", "alignItems": "center", "gap": 2, "flexWrap": "wrap", "fontSize": 12, "color": p.muted},
+        "crumb": {"paddingHorizontal": 5, "paddingVertical": 2, "borderRadius": 6, "cursor": "pointer"},
+        "crumb:hover": {"background": p.hover, "color": p.text},
+        "fileRow": {"flexDirection": "row", "alignItems": "center", "gap": 9, "height": 32, "paddingHorizontal": 8,
+            "borderRadius": 8, "cursor": "pointer", "transition": 100, "fontSize": 13},
+        "fileRow:hover": {"background": p.hover},
+        "fileRow.active": {"background": p.primarySoft, "color": p.primary, "fontWeight": 600},
+        "fileMeta": {"fontSize": 11, "color": p.faint},
+        "tabs": {"flexDirection": "row", "alignItems": "flex-end", "gap": 4, "paddingHorizontal": 16, "paddingTop": 10, "height": 46},
+        "tab": {"flexDirection": "row", "alignItems": "center", "gap": 8, "height": 34, "paddingHorizontal": 12,
+            "borderTopLeftRadius": 10, "borderTopRightRadius": 10, "cursor": "pointer", "color": p.muted, "fontSize": 13,
+            "transition": 120, "maxWidth": 240},
+        "tab:hover": {"background": p.hover, "color": p.text},
+        "tab.active": {"background": p.surface, "color": p.text, "fontWeight": 600, "shadow": {"y": -1, "blur": 6, "color": p.shadow}},
+        "tabClose": {"width": 18, "height": 18, "borderRadius": 9, "alignItems": "center", "justifyContent": "center", "cursor": "pointer"},
+        "tabClose:hover": {"background": p.hover},
+        "page": {"flexGrow": 1, "flexShrink": 1, "flexBasis": 0, "minHeight": 0, "background": p.surface, "borderTopLeftRadius": 12, "borderTopRightRadius": 12,
+            "marginHorizontal": 10, "overflow": "hidden", "shadow": soft},
+        "notebook": {"paddingVertical": 22, "paddingHorizontal": 26, "gap": 4, "maxWidth": 1180, "alignSelf": "center", "width": "100%"},
+        "cell": {"flexDirection": "row", "gap": 10, "paddingVertical": 6, "paddingRight": 10, "borderRadius": 12,
+            "borderLeftWidth": 4, "borderColor": "transparent", "transition": 140},
+        "cell:hover": {"background": p.sunken},
+        "cell.selected": {"background": p.sunken, "borderColor": p.primary},
+        "cell.editing": {"background": p.sunken, "borderColor": p.accent},
+        "prompt": {"width": 64, "alignItems": "flex-end", "paddingTop": 9, "fontFamily": Mono, "fontSize": 12, "color": p.faint},
+        "prompt.running": {"color": p.primary, "fontWeight": 700},
+        "prompt.error": {"color": p.danger},
+        "codebox": {"background": p.code, "borderRadius": 10, "borderWidth": 1, "borderColor": p.border, "paddingVertical": 6,
+            "overflow": "hidden", "transition": 140},
+        "codebox.focused": {"borderColor": p.primary, "shadow": {"spread": 3, "color": p.primarySoft}},
+        "cellTools": {"flexDirection": "row", "gap": 2, "position": "absolute", "right": 8, "top": -14, "padding": 3,
+            "borderRadius": 10, "background": p.raised, "borderWidth": 1, "borderColor": p.border, "shadow": soft, "zIndex": 5},
+        "miniTool": {"width": 26, "height": 26, "borderRadius": 7, "alignItems": "center", "justifyContent": "center",
+            "cursor": "pointer", "color": p.muted},
+        "miniTool:hover": {"background": p.hover, "color": p.text},
+        "outputs": {"gap": 6, "paddingTop": 8, "paddingLeft": 4},
+        "stream": {"fontFamily": Mono, "fontSize": CodeSize, "lineHeight": 1.45d, "color": p.text},
+        "stderr": {"fontFamily": Mono, "fontSize": CodeSize, "lineHeight": 1.45d, "color": p.danger, "background": p.dangerSoft,
+            "padding": 8, "borderRadius": 8},
+        "errorBox": {"background": p.dangerSoft, "borderRadius": 10, "borderLeftWidth": 3, "borderColor": p.danger, "padding": 12, "gap": 4},
+        "errorName": {"color": p.danger, "fontWeight": 700, "fontFamily": Mono, "fontSize": CodeSize},
+        "errorText": {"fontFamily": Mono, "fontSize": CodeSize, "color": p.text, "lineHeight": 1.4d},
+        "outLabel": {"fontFamily": Mono, "fontSize": 12, "color": p.accent, "fontWeight": 700},
+        "richCard": {"background": p.raised, "borderRadius": 10, "borderWidth": 1, "borderColor": p.border, "padding": 12, "gap": 8},
+        "table": {"borderRadius": 10, "borderWidth": 1, "borderColor": p.border, "overflow": "hidden", "alignSelf": "flex-start"},
+        "tableHead": {"flexDirection": "row", "background": p.sunken, "borderBottomWidth": 1, "borderColor": p.border},
+        "tableRow": {"flexDirection": "row", "borderBottomWidth": 1, "borderColor": p.border},
+        "tableRow:hover": {"background": p.hover},
+        "th": {"paddingHorizontal": 12, "paddingVertical": 7, "fontWeight": 700, "fontSize": 12, "color": p.muted},
+        "td": {"paddingHorizontal": 12, "paddingVertical": 6, "fontSize": 13, "fontFamily": Mono},
+        "md": {"gap": 8, "paddingVertical": 4, "paddingHorizontal": 6},
+        "md.h1": {"fontSize": 28, "fontWeight": 800, "marginTop": 4},
+        "md.h2": {"fontSize": 22, "fontWeight": 750, "marginTop": 4},
+        "md.h3": {"fontSize": 18, "fontWeight": 700},
+        "md.h4": {"fontSize": 15, "fontWeight": 700},
+        "mdQuote": {"borderLeftWidth": 3, "borderColor": p.accent, "paddingLeft": 12, "color": p.muted},
+        "mdCode": {"background": p.code, "borderRadius": 8, "padding": 10, "borderWidth": 1, "borderColor": p.border},
+        "mdRule": {"height": 1, "background": p.border, "marginVertical": 6},
+        "addBar": {"flexDirection": "row", "justifyContent": "center", "gap": 8, "paddingVertical": 10, "opacity": 0.85d},
+        "ghost": {"flexDirection": "row", "alignItems": "center", "gap": 6, "height": 30, "paddingHorizontal": 12,
+            "borderRadius": 15, "borderWidth": 1, "borderColor": p.border, "color": p.muted, "fontSize": 12, "cursor": "pointer",
+            "transition": 120, "background": p.surface},
+        "ghost:hover": {"borderColor": p.primary, "color": p.primary, "background": p.primarySoft},
+        "statusbar": {"flexDirection": "row", "alignItems": "center", "gap": 16, "height": 28, "paddingHorizontal": 14,
+            "fontSize": 12, "color": p.muted, "background": p.surface, "borderTopWidth": 1, "borderColor": p.border},
+        "hero": {"alignItems": "center", "gap": 14, "paddingTop": 70, "paddingBottom": 30, "paddingHorizontal": 24},
+        "heroTitle": {"fontSize": 40, "fontWeight": 850, "color": p.text},
+        "heroText": {"fontSize": 15, "color": p.muted, "textAlign": "center", "maxWidth": 560, "lineHeight": 1.5d},
+        "launchGrid": {"flexDirection": "row", "flexWrap": "wrap", "gap": 16, "justifyContent": "center", "paddingHorizontal": 24},
+        "launchCard": {"width": 230, "padding": 18, "gap": 10, "borderRadius": 16, "background": p.surface, "borderWidth": 1,
+            "borderColor": p.border, "cursor": "pointer", "shadow": soft, "transition": 160},
+        "launchCard:hover": {"translateY": -3, "shadow": lifted, "borderColor": p.primary},
+        "launchIcon": {"width": 40, "height": 40, "borderRadius": 12, "background": p.gradient, "alignItems": "center", "justifyContent": "center"},
+        "kbd": {"fontFamily": Mono, "fontSize": 11, "paddingHorizontal": 6, "paddingVertical": 2, "borderRadius": 5,
+            "background": p.sunken, "borderWidth": 1, "borderColor": p.border, "color": p.muted},
+        "toast": {"position": "absolute", "bottom": 44, "alignSelf": "center", "flexDirection": "row", "alignItems": "center",
+            "gap": 10, "paddingHorizontal": 16, "height": 40, "borderRadius": 20, "background": p.raised, "borderWidth": 1,
+            "borderColor": p.border, "shadow": lifted, "fontSize": 13},
+        "dot": {"width": 8, "height": 8, "borderRadius": 4}
+    };
+};

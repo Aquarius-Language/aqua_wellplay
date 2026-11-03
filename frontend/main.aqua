@@ -1,0 +1,154 @@
+##
+WellPlay 前端：瀏覽器中的筆記本介面（SaturnUI，畫在 Processing 的全頁畫布上，以「互動」函式庫處理輸入）。它連到提供
+這個網頁的 aqua_wellplay 伺服器；儲存格在伺服器的桌面上執行。
+The WellPlay frontend: the notebook interface in the browser (SaturnUI drawn on a full-page Processing canvas, input
+through the Interaction library). It connects to the aqua_wellplay server that served the page; cells run on the
+server's desktop.
+##
+var p = import("Processing");
+var Network = import("Network");
+var ix = import("Interaction");
+var Saturn = import("Saturn");
+var UI = import("SaturnUI");
+var theme = import("src/theme.aqua");
+var editors = import("src/editors.aqua");
+var outputs = import("src/outputs.aqua");
+var appModule = import("src/app.aqua");
+var views = import("src/views.aqua");
+
+views.Initialize(views.Modules(app: appModule, editors: editors, outputs: outputs, theme: theme));
+var app = appModule.Create(editors, theme);
+var session = null;
+var surface = null;
+var follow = null;
+var lastTime = 0.0d;
+var pendingKey = "";
+
+# ---- 鍵盤 / The keyboard ----
+var KeyEnter = 257; var KeyEscape = 256; var KeyUp = 265; var KeyDown = 264; var KeyPadEnter = 335;
+var letter = function(e) {
+    var k = e.key;
+    if (k == null) { return ""; }
+    if (k >= 65 && k <= 90) { return String.FromCode(k + 32); }
+    if (k >= 97 && k <= 122) { return String.FromCode(k); }
+    if (k == 48) { return "0"; }
+    return "";
+};
+# Jupyter 的快捷鍵。編輯模式下只攔截執行、Esc 與跨儲存格的方向鍵；指令模式下的字母鍵操作儲存格。 / Jupyter's
+# shortcuts. In edit mode only running, Esc and arrows across cells are taken; in command mode letters act on cells.
+var handleKey = function(e) {
+    if (e.type != "key" || e.action == "release" || e.action == 0) { return false; }
+    var key = e.key;
+    if (key == KeyPadEnter) { key = KeyEnter; }
+    var primary = e.primary == true;
+    var shift = e.shift == true;
+    var name = letter(e);
+    if (primary && name == "s") { appModule.Save(app, appModule.ActiveDoc(app)); return true; }
+    if (primary && name == "b") { app.sidebar = !app.sidebar; surface.Rebuild(); return true; }
+    var doc = appModule.ActiveDoc(app);
+    if (doc == null || app.dialog != null) { return false; }
+    var editing = doc.editing != null;
+    var editor = if (editing) { doc.editors[doc.editing]; } else { null; };
+    var popup = editor != null && editors.HasPopup(editor);
+    if (key == KeyEnter && (shift || primary || e.alt == true) && !popup) {
+        if (shift) { views.runSelected(app, doc, true); }
+        elif (primary) { appModule.Run(app, doc, [doc.selected]); }
+        else { appModule.Run(app, doc, [doc.selected]); appModule.Insert(app, doc, doc.selected + 1, "code"); views.FocusCell(app, doc, doc.selected); }
+        surface.Rebuild();
+        return true;
+    }
+    if (editing) {
+        if (key == KeyEscape && !popup) { views.Blur(app); return true; }
+        # 在第一行按上、最後一行按下，移到相鄰的儲存格。 / Up on the first line or down on the last moves to the
+        # neighboring cell.
+        if (!popup && !shift && key == KeyUp && editors.OnFirstLine(editor) && doc.selected > 0) {
+            views.FocusCell(app, doc, doc.selected - 1);
+            editors.End(doc.editors[doc.editing]);
+            return true;
+        }
+        if (!popup && !shift && key == KeyDown && editors.OnLastLine(editor) && doc.selected + 1 < len(doc.notebook["cells"])) {
+            views.FocusCell(app, doc, doc.selected + 1);
+            editors.Start(doc.editors[doc.editing]);
+            return true;
+        }
+        return false;
+    }
+    if (surface.focus != null) { return false; }
+    var cells = doc.notebook["cells"];
+    var again = pendingKey;
+    pendingKey = "";
+    if (key == KeyEnter) { views.FocusCell(app, doc, doc.selected); return true; }
+    if (key == KeyUp || name == "k") { appModule.Select(app, doc, doc.selected - 1); surface.Rebuild(); return true; }
+    if (key == KeyDown || name == "j") { appModule.Select(app, doc, doc.selected + 1); surface.Rebuild(); return true; }
+    if (name == "a") { appModule.Insert(app, doc, doc.selected, "code"); surface.Rebuild(); return true; }
+    if (name == "b") { appModule.Insert(app, doc, doc.selected + 1, "code"); surface.Rebuild(); return true; }
+    if (name == "m") { appModule.SetType(app, doc, doc.selected, "markdown"); surface.Rebuild(); return true; }
+    if (name == "y") { appModule.SetType(app, doc, doc.selected, "code"); surface.Rebuild(); return true; }
+    if (name == "d") { if (again == "d") { appModule.DeleteCell(app, doc, doc.selected); surface.Rebuild(); } else { pendingKey = "d"; } return true; }
+    if (name == "i") { if (again == "i") { appModule.Interrupt(app, doc); } else { pendingKey = "i"; } return true; }
+    if (name == "0") { if (again == "0") { app.dialog = {"kind": "restart"}; surface.Rebuild(); } else { pendingKey = "0"; } return true; }
+    return false;
+};
+
+# ---- 畫面 / The window ----
+var setup = function() {
+    p.fullScreen(p.P2D, "WellPlay");
+    Saturn.SetTextMeasurer(p.uiTextMetrics);
+    var palette = appModule.Palette(app);
+    surface = UI.Surface(p.width, p.height, UI.Builder(build: context => views.Root(app)),
+        {"theme": theme.SaturnTheme(palette), "sheet": theme.Sheet(palette)});
+    app.surface = surface;
+    session = ix.Attach(p.platformWindow);
+    # 一個錯誤只成為提示訊息，介面繼續運作。 / An error becomes a toast; the interface keeps working.
+    session.On("*", function(event) {
+        var handled = Network.Try(() => handleKey(event) || surface.Feed(event));
+        if (handled.Success) { return handled.Value; }
+        report(handled.Error.Message);
+        return true;
+    });
+    follow = UI.TextInputFollower(session);
+    p.on("windowResized", function() { surface.Resize(p.width, p.height); return null; });
+    lastTime = currentTime();
+    return null;
+};
+
+var report = function(message) {
+    appModule.Toast(app, "Something went wrong · 發生錯誤: " + message, "error");
+    surface.Rebuild();
+    return null;
+};
+var frame = function() {
+    var now = currentTime();
+    var seconds = (now - lastTime) / 1000.0d;
+    lastTime = now;
+    var doc = appModule.ActiveDoc(app);
+    var focused = if (doc != null && doc.editing != null) { doc.editors[doc.editing]; } else { null; };
+    if (focused != null) { editors.Update(focused, seconds); }
+    appModule.Tick(app);
+    # 有儲存格在執行時，狀態指示燈會閃爍。 / The status light pulses while cells run.
+    if (doc != null && Hash.Get(doc.kernel, "state", "idle") == "busy") { surface.Rebuild(); }
+    # 全螢幕的大小在 setup 之後才確定（網頁先報螢幕大小）：每個影格對齊視窗。 / The full-screen size settles after
+    # setup (the web reports the screen first): follow the window every frame.
+    surface.Resize(p.width, p.height);
+    surface.Frame(p.millis());
+    var palette = appModule.Palette(app);
+    var bg = theme.RGB(palette.background);
+    p.background(bg[0], bg[1], bg[2]);
+    p.drawUI(surface.Paint());
+    # 編輯器的浮動視窗（自動完成、說明）畫在最上層。 / The editor's popups (completion, hover) on top of everything.
+    var popup = editors.PaintPopup(focused);
+    if (popup != null) { p.drawUI(popup); }
+    session.SetCursor(surface.Cursor());
+    follow(surface.ImeRect());
+    return null;
+};
+
+# 連線與視窗同時開始。 / The connection starts alongside the window.
+appModule.Connect(app).Catch(error => appModule.Toast(app, "Cannot connect · 無法連線: " + String.From(error), "error"));
+var draw = function() {
+    var drawn = Network.Try(frame);
+    if (!drawn.Success) { report(drawn.Error.Message); }
+    return null;
+};
+
+p.run(setup, draw);

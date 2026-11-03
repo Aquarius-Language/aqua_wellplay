@@ -1,0 +1,13 @@
+# The WellPlay frontend: a SaturnUI app built for the web, served by aqua_wellplay (see ../README.md).
+manifest_version = 2
+
+[project]
+name = "wellplay_frontend"
+version = "0.1.0"
+entry = "main.aqua"
+sources = ["main.aqua", "src/theme.aqua", "src/editors.aqua", "src/outputs.aqua", "src/app.aqua", "src/views.aqua"]
+platforms = ["web"]
+
+[dependencies]
+Aqua_JSON-RPC = { path = "../libraries/Aqua_JSON-RPC", version = "1.0.0" }
+Aqua_Embedded_LSP_Editor = { path = "../libraries/Aqua_Embedded_LSP_Editor", version = "1.1.0" }

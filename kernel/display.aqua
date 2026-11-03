@@ -93,17 +93,16 @@ var __wellplayKernel = function(token) {
         return WellPlayData(data: {"application/vnd.wellplay.chart+json": spec,
             "text/plain": "<" + Hash.Get(spec, "kind", "line") + " chart" + (if (title == "") { ""; } else { ": " + title; }) + ">"});
     };
-    # options：title、labels（x 軸標籤）、xLabel、yLabel。 / options: title, labels (x axis), xLabel, yLabel.
-    var chartOf = function(kind, series, options) {
-        var spec = {"kind": kind, "series": seriesOf(series)};
-        var keys = Hash.Keys(options);
-        for (var i = 0; i < len(keys); i++) { spec[keys[i]] = options[keys[i]]; }
+    # title（標題）、labels（x 軸的標籤）、height（高度）。 / title, labels (the x axis), height.
+    var chartOf = function(kind, series, title, labels, height) {
+        var spec = {"kind": kind, "series": seriesOf(series), "title": title, "height": height};
+        if (labels != null) { spec["labels"] = labels; }
         return Chart(spec);
     };
-    var LineChart = function(series, options = {}) { return chartOf("line", series, options); };
-    var BarChart = function(series, options = {}) { return chartOf("bar", series, options); };
-    var ScatterChart = function(series, options = {}) { return chartOf("scatter", series, options); };
-    var AreaChart = function(series, options = {}) { return chartOf("area", series, options); };
+    var LineChart = (series, title = "", labels = null, height = 280) => chartOf("line", series, title, labels, height);
+    var BarChart = (series, title = "", labels = null, height = 280) => chartOf("bar", series, title, labels, height);
+    var ScatterChart = (series, title = "", labels = null, height = 280) => chartOf("scatter", series, title, labels, height);
+    var AreaChart = (series, title = "", labels = null, height = 280) => chartOf("area", series, title, labels, height);
 
     var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     var base64 = function(bytes) {

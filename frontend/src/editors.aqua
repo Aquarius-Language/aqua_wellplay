@@ -1,0 +1,130 @@
+##
+儲存格的程式碼編輯器：Aqua_Embedded_LSP_Editor 放進 SaturnUI 的 Immediate 小工具。編輯器自己畫出文字（Saturn 畫筆）、
+處理輸入（Immediate 把事件以它自己的座標送來），高度跟著行數長；自動完成等浮動視窗畫在最上層，不被儲存格裁切。
+The cells' code editors: Aqua_Embedded_LSP_Editor inside SaturnUI's Immediate widget. The editor paints its text (with
+a Saturn painter), takes input (Immediate hands it events in its own coordinates) and grows with its lines; popups such
+as completion are painted on top of everything, so a cell's box never clips them.
+##
+var UI = import("SaturnUI");
+var Saturn = import("Saturn");
+var ed = import("AquaEditor");
+
+# 編輯器讀取事件的欄位（它用 . 存取，所以雜湊表轉成結構）。 / The event fields the editor reads (with dots, so hashes
+# become structs).
+struct EditorEvent {
+    type; time; x; y; startX; startY; dx; dy; velocityX; velocityY; button; count; pointerId; pointerType; modifiers;
+    shift; alt; primary; key; text; action; command; source; phase; state; cursor
+}
+var eventOf = function(h) {
+    return EditorEvent(type: h["type"], time: h["time"], x: h["x"], y: h["y"], startX: h["startX"], startY: h["startY"],
+        dx: h["dx"], dy: h["dy"], velocityX: h["velocityX"], velocityY: h["velocityY"], button: h["button"], count: h["count"],
+        pointerId: h["pointerId"], pointerType: h["pointerType"], modifiers: h["modifiers"], shift: h["shift"], alt: h["alt"],
+        primary: h["primary"], key: h["key"], text: h["text"], action: h["action"], command: h["command"], source: h["source"],
+        phase: h["phase"], state: h["state"], cursor: h["cursor"]);
+};
+
+struct CellEditor { id; editor; painter; width; focused; onChange; lastText; popup }
+
+var style = {"fontFamily": "monospace", "fontSize": 13};
+var measure = text => Saturn.MeasureText(text, style)["width"];
+var lineHeight = 20;
+var padding = 6;
+
+# 一個 Saturn 畫筆包成編輯器要的 painter。 / A Saturn painter wrapped as the painter the editor takes.
+var painterOf = function(p) {
+    var color = c => [c[0], c[1], c[2], 255];
+    return {
+        "rect": (x, y, w, h, c) => p.Rect(x, y, w, h, color(c)),
+        "text": (x, y, t, c) => p.Text(t, x, y + 2, {"color": color(c), "fontFamily": "monospace", "fontSize": 13}),
+        "line": (x1, y1, x2, y2, c) => p.Line(x1, y1, x2, y2, 1, color(c)),
+        "clip": (x, y, w, h) => p.PushClip(x, y, w, h),
+        "unclip": () => p.PopClip()
+    };
+};
+
+var Create = function(id, text, theme, onChange) {
+    var editor = ed.CreateEditor({"text": text, "lineHeight": lineHeight, "measure": measure, "theme": theme,
+        "uri": "inmemory://wellplay/" + id + ".aqua", "tabSize": 4});
+    ed.SetFocus(editor, false);
+    var cell = CellEditor(id: id, editor: editor, painter: Saturn.Painter(), width: 400, focused: false, onChange: onChange,
+        lastText: text, popup: null);
+    ed.OnChange(editor, function(t) {
+        cell.lastText = t;
+        if (cell.onChange != null) { cell.onChange(t); }
+        return null;
+    });
+    # 每個編輯器在程式內有自己的內建語言伺服器（不經網路）。 / Each editor has the built-in language server in-process.
+    ed.UseBuiltInLanguageServer(editor);
+    return cell;
+};
+
+var Text = cell => ed.Text(cell.editor);
+var SetText = function(cell, text) { if (text != ed.Text(cell.editor)) { ed.SetText(cell.editor, text); cell.lastText = text; } return null; };
+var SetTheme = function(cell, theme) { ed.SetTheme(cell.editor, theme); return null; };
+var LineCount = cell => len(String.Split(ed.Text(cell.editor), String.FromCode(10)));
+# 一行空間留給下一行，按 Enter 時不必捲動。 / One spare line, so Enter never scrolls the cell.
+var Height = cell => (LineCount(cell) + 1) * lineHeight;
+var Focus = function(cell, focused) {
+    cell.focused = focused;
+    ed.SetFocus(cell.editor, focused);
+    return null;
+};
+var Update = function(cell, seconds) { ed.Update(cell.editor, seconds); return null; };
+var End = function(cell) {
+    var lines = String.Split(ed.Text(cell.editor), String.FromCode(10));
+    ed.SetCursor(cell.editor, len(lines) - 1, len(lines[len(lines) - 1]));
+    return null;
+};
+var Start = function(cell) { ed.SetCursor(cell.editor, 0, 0); return null; };
+# 游標在第一行或最後一行（方向鍵用來換儲存格）。 / Whether the caret is on the first or last line (arrows move
+# between cells there).
+var OnFirstLine = cell => ed.Cursor(cell.editor)["line"] == 0;
+var OnLastLine = cell => ed.Cursor(cell.editor)["line"] >= LineCount(cell) - 1;
+var HasPopup = function(cell) {
+    var model = ed.RenderModel(cell.editor);
+    return model["completion"] != null;
+};
+
+# 儲存格中的 Immediate 小工具。 / The Immediate widget in a cell.
+var Widget = function(cell, onFocus) {
+    var height = Height(cell);
+    return UI.Immediate(key: "editor-" + cell.id, height: height, style: {"cursor": "text", "alignSelf": "stretch"},
+        paint: function(x, y, w, h) {
+            cell.width = w;
+            ed.Place(cell.editor, 0, 0, w, h);
+            var p = cell.painter;
+            p.Clear();
+            var model = ed.RenderModel(cell.editor);
+            ed.PaintContent(model, painterOf(p));
+            # 浮動視窗另外畫在最上層（PaintPopup）。 / Popups are painted separately, on top (PaintPopup).
+            var open = model["completion"] != null || model["hover"] != null || model["signature"] != null || model["menu"].open;
+            cell.popup = null;
+            if (open) { cell.popup = {"model": model, "x": x, "y": y}; }
+            return p.Build();
+        },
+        feed: function(event) {
+            # 滾輪交給筆記本捲動（儲存格不會自己捲）。 / The wheel scrolls the notebook (cells never scroll themselves).
+            if (event["type"] == "scroll") { return false; }
+            return ed.HandleEvent(cell.editor, eventOf(event));
+        },
+        ime: function() {
+            if (!cell.focused) { return null; }
+            var cursor = ed.Cursor(cell.editor);
+            var text = String.Split(ed.Text(cell.editor), String.FromCode(10))[cursor["line"]];
+            var x = measure(String.Slice(text, 0, cursor["character"]));
+            return {"x": x + 40, "y": cursor["line"] * lineHeight, "width": 2, "height": lineHeight};
+        },
+        focus: function(focused) { Focus(cell, focused); if (onFocus != null) { onFocus(focused); } return null; });
+};
+
+# 最上層的浮動視窗（自動完成、說明、參數提示、右鍵選單），以視窗座標畫出。 / The popups on top (completion, hover,
+# signature help, the context menu), painted in window coordinates.
+var PaintPopup = function(cell) {
+    if (cell == null || cell.popup == null) { return null; }
+    var p = Saturn.Painter();
+    ed.PaintPopups(cell.popup["model"], painterOf(p));
+    var list = p.Build();
+    var placed = Saturn.Painter();
+    placed.Append(list, cell.popup["x"], cell.popup["y"]);
+    return placed.Build();
+};

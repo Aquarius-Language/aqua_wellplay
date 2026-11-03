@@ -100,7 +100,9 @@ var 說明, Hover = function(text, line, character) { return server.Hover(buffer
 # 畫文字、line(x1, y1, x2, y2, [r,g,b]) 畫線，可選 clip(x, y, 寬, 高) / unclip() 限制繪製範圍。
 # Paint a render model with any graphics library. The painter is a hash: rect(x, y, w, h, [r,g,b]),
 # text(x, y, text, [r,g,b]) drawn from its top left, line(x1, y1, x2, y2, [r,g,b]), optional clip(x, y, w, h) / unclip().
-var 繪製, Paint = function(model, painter) {
+# 只畫編輯器的方框（文字、選取、游標、行號、捲軸），不含浮動視窗。 / Only the editor's box (text, selections, caret,
+# line numbers, scrollbars), without the popups.
+var 繪製內容, PaintContent = function(model, painter) {
     var theme = model["theme"];
     var rect = painter["rect"];
     var text = painter["text"];
@@ -166,6 +168,21 @@ var 繪製, Paint = function(model, painter) {
         }
     }
     if (painter["unclip"] != null) { painter["unclip"](); }
+    return true;
+};
+# 只畫浮動視窗（參數提示、說明、自動完成、右鍵選單）：可畫在其他內容之上，不受編輯器方框裁切。 / Only the popups
+# (signature, hover, completion, context menu): paint them above other content, unclipped by the editor's box.
+var 繪製浮動視窗, PaintPopups = function(model, painter) {
+    var theme = model["theme"];
+    var rect = painter["rect"];
+    var text = painter["text"];
+    var line = painter["line"];
+    var color = function(kind) {
+        var c = theme[kind];
+        if (c == null) { c = theme["text"]; }
+        return c;
+    };
+    var lineHeight = model["lineHeight"];
     # 浮動視窗：參數提示、說明、自動完成、右鍵選單。 / Popups: signature, hover, completion, context menu.
     var popup = function(x, y, lines, selected) {
         var size = editors.PopupSize(lines, lineHeight);
@@ -211,4 +228,8 @@ var 繪製, Paint = function(model, painter) {
         }
     }
     return true;
+};
+var 繪製, Paint = function(model, painter) {
+    PaintContent(model, painter);
+    return PaintPopups(model, painter);
 };

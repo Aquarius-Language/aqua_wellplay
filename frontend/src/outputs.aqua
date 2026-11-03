@@ -1,0 +1,412 @@
+##
+輸出的繪製：把 nbformat 的輸出（stream、display_data、execute_result、error）變成 SaturnUI 小工具。MIME 套組依優先順序
+選一種表示：進度、圖表、表格、圖片、Markdown、JSON、純文字（和 IPython 前端相同的做法）。新的 MIME 類型只要在
+`renderers` 加一項。
+Rendering outputs: nbformat outputs (stream, display_data, execute_result, error) become SaturnUI widgets. A MIME bundle
+shows its richest form in this order: progress, chart, table, image, Markdown, JSON, plain text (as IPython frontends
+do). A new MIME type is one more entry in `renderers`.
+##
+var UI = import("SaturnUI");
+var Saturn = import("Saturn");
+var Serialization = import("Serialization");
+var Processing = import("Processing");
+
+var NL = String.FromCode(10);
+
+# ---- Markdown ----
+# 支援標題、段落、粗體、斜體、行內程式碼、程式碼區塊、清單、引言、分隔線與連結文字。 / Headings, paragraphs, bold,
+# italic, inline code, code blocks, lists, quotes, rules and link text.
+var inline = function(text, t, base) {
+    var spans = [];
+    var current = "";
+    var bold = false;
+    var italic = false;
+    var flush = function() {
+        if (current == "") { return null; }
+        var style = Hash.Clone(base);
+        if (bold) { style["fontWeight"] = 700; }
+        if (italic) { style["fontStyle"] = "italic"; }
+        Array.Append(spans, UI.Span(text: current, style: style));
+        current = "";
+        return null;
+    };
+    var i = 0;
+    var n = len(text);
+    for (; i < n;) {
+        var c = text[i];
+        if (c == "`") {
+            var close = String.Find(String.Slice(text, i + 1, n), "`");
+            if (close >= 0) {
+                flush();
+                var code = Hash.Clone(base);
+                code["fontFamily"] = "monospace";
+                code["color"] = t.accent;
+                Array.Append(spans, UI.Span(text: String.Slice(text, i + 1, i + 1 + close), style: code));
+                i = i + close + 2;
+                continue;
+            }
+        }
+        if ((c == "*" || c == "_") && i + 1 < n && text[i + 1] == c) { flush(); bold = !bold; i += 2; continue; }
+        if (c == "*" || (c == "_" && (i == 0 || text[i - 1] == " "))) { flush(); italic = !italic; i++; continue; }
+        if (c == "[") {
+            var mid = String.Find(String.Slice(text, i, n), "](");
+            if (mid > 0) {
+                var end = String.Find(String.Slice(text, i + mid, n), ")");
+                if (end > 0) {
+                    flush();
+                    var link = Hash.Clone(base);
+                    link["color"] = t.primary;
+                    Array.Append(spans, UI.Span(text: String.Slice(text, i + 1, i + mid), style: link));
+                    i = i + mid + end + 1;
+                    continue;
+                }
+            }
+        }
+        current += c;
+        i++;
+    }
+    flush();
+    if (len(spans) == 0) { Array.Append(spans, UI.Span(text: " ", style: base)); }
+    return spans;
+};
+var paragraph = (text, t, base) => UI.RichText(spans: inline(text, t, base), style: {"lineHeight": 1.55d});
+
+var Markdown = function(source, t) {
+    var lines = String.Split(String.Replace(source, String.FromCode(13), ""), NL);
+    var blocks = [];
+    var text = {"fontSize": 14, "color": t.text};
+    var para = [];
+    var flushPara = function() {
+        if (len(para) > 0) { Array.Append(blocks, paragraph(String.Join(para, " "), t, text)); para = []; }
+        return null;
+    };
+    var i = 0;
+    for (; i < len(lines);) {
+        var line = lines[i];
+        var trimmed = String.Trim(line);
+        if (trimmed == "") { flushPara(); i++; continue; }
+        if (String.StartsWith(trimmed, "```")) {
+            flushPara();
+            var code = [];
+            i++;
+            for (; i < len(lines) && !String.StartsWith(String.Trim(lines[i]), "```");) { Array.Append(code, lines[i]); i++; }
+            i++;
+            Array.Append(blocks, UI.Box(class: "mdCode", child: UI.Text(String.Join(code, NL), style: {"fontFamily": "monospace", "fontSize": 13})));
+            continue;
+        }
+        var level = 0;
+        for (; level < len(trimmed) && level < 6 && trimmed[level] == "#";) { level++; }
+        if (level > 0 && level < len(trimmed) && trimmed[level] == " ") {
+            flushPara();
+            var h = Hash.Clone(text);
+            h["fontSize"] = [28, 22, 18, 15, 14, 13][level - 1];
+            h["fontWeight"] = if (level <= 2) { 800; } else { 700; };
+            Array.Append(blocks, paragraph(String.Trim(String.Slice(trimmed, level, len(trimmed))), t, h));
+            if (level == 1) { Array.Append(blocks, UI.Box(style: {"height": 3, "width": 56, "borderRadius": 2, "background": t.gradient})); }
+            i++;
+            continue;
+        }
+        if (trimmed == "---" || trimmed == "***" || trimmed == "___") { flushPara(); Array.Append(blocks, UI.Box(class: "mdRule")); i++; continue; }
+        if (String.StartsWith(trimmed, ">")) {
+            flushPara();
+            var quote = [];
+            for (; i < len(lines) && String.StartsWith(String.Trim(lines[i]), ">");) {
+                Array.Append(quote, String.Trim(String.Slice(String.Trim(lines[i]), 1, len(String.Trim(lines[i])))));
+                i++;
+            }
+            var q = Hash.Clone(text);
+            q["color"] = t.muted;
+            Array.Append(blocks, UI.Box(class: "mdQuote", child: paragraph(String.Join(quote, " "), t, q)));
+            continue;
+        }
+        var bullet = String.StartsWith(trimmed, "- ") || String.StartsWith(trimmed, "* ") || String.StartsWith(trimmed, "+ ");
+        var dot = String.Find(trimmed, ". ");
+        var numbered = dot > 0 && dot <= 3 && String.ParseInt(String.Slice(trimmed, 0, dot)) != null;
+        if (bullet || numbered) {
+            flushPara();
+            var items = [];
+            var number = 1;
+            for (; i < len(lines);) {
+                var item = String.Trim(lines[i]);
+                var isBullet = String.StartsWith(item, "- ") || String.StartsWith(item, "* ") || String.StartsWith(item, "+ ");
+                var d = String.Find(item, ". ");
+                var isNumber = d > 0 && d <= 3 && String.ParseInt(String.Slice(item, 0, d)) != null;
+                if (!isBullet && !isNumber) { break; }
+                var body = if (isBullet) { String.Slice(item, 2, len(item)); } else { String.Slice(item, d + 2, len(item)); };
+                var marker = if (isBullet) { "•"; } else { String.From(number) + "."; };
+                Array.Append(items, UI.Row(gap: 8, children: [
+                    UI.Text(marker, style: {"color": t.primary, "fontWeight": 700, "width": 18, "textAlign": "right"}),
+                    UI.Expanded(child: paragraph(body, t, text))
+                ]));
+                number++;
+                i++;
+            }
+            Array.Append(blocks, UI.Column(gap: 4, crossAxis: "stretch", children: items));
+            continue;
+        }
+        Array.Append(para, trimmed);
+        i++;
+    }
+    flushPara();
+    if (len(blocks) == 0) { Array.Append(blocks, UI.Text("Empty Markdown cell · 空的 Markdown 儲存格", style: {"color": t.faint, "fontStyle": "italic"})); }
+    return UI.Column(class: "md", crossAxis: "stretch", children: blocks);
+};
+
+# ---- 表格 / Tables ----
+var tableLimit = 200;
+var Table = function(spec, t) {
+    var columns = Hash.Get(spec, "columns", []);
+    var rows = Hash.Get(spec, "rows", []);
+    var shown = if (len(rows) > tableLimit) { Array.Slice(rows, 0, tableLimit); } else { rows; };
+    # 每欄的寬度：標題與內容中最寬的。 / Each column's width: the widest of its header and cells.
+    var widths = [];
+    for (var c = 0; c < len(columns); c++) {
+        var w = Saturn.MeasureText(String.From(columns[c]), {"fontSize": 12, "fontWeight": 700})["width"];
+        for (var r = 0; r < len(shown); r++) {
+            var cell = Saturn.MeasureText(String.From(shown[r][c]), {"fontFamily": "monospace", "fontSize": 13})["width"];
+            if (cell > w) { w = cell; }
+        }
+        Array.Append(widths, Processing.min(w + 26, 360));
+    }
+    var align = v => if (typeOf(v) == "integer" || typeOf(v) == "double" || typeOf(v) == "float" || typeOf(v) == "long") { "right"; } else { "left"; };
+    var head = UI.Row(class: "tableHead", children: [for (var c = 0; c < len(columns); c++) UI.Text(String.From(columns[c]), class: "th", maxLines: 1, ellipsis: true, style: {"width": widths[c]})]);
+    var body = [];
+    for (var r = 0; r < len(shown); r++) {
+        var row = shown[r];
+        Array.Append(body, UI.Row(class: "tableRow", children: [for (var c = 0; c < len(columns); c++)
+            UI.Text(String.From(row[c]), class: "td", maxLines: 1, ellipsis: true, style: {"width": widths[c], "textAlign": align(row[c])})]));
+    }
+    var note = if (len(rows) > tableLimit) { UI.Text(String.From(len(rows) - tableLimit) + " more rows · 還有更多列", style: {"color": t.faint, "fontSize": 12, "padding": 8}); } else { null; };
+    return UI.Column(children: [
+        UI.ScrollView(horizontal: true, child: UI.Column(class: "table", children: [head, ...body])),
+        note,
+        UI.Text(String.From(len(rows)) + " rows × " + String.From(len(columns)) + " columns", style: {"color": t.faint, "fontSize": 11, "paddingTop": 4}),
+    ]);
+};
+
+# ---- 圖表 / Charts ----
+var niceStep = function(span) {
+    if (span <= 0) { return 1.0d; }
+    var raw = span / 5.0d;
+    var power = Processing.pow(10, Processing.floor(Processing.log(raw) / Processing.log(10)));
+    var unit = raw / power;
+    var nice = if (unit < 1.5d) { 1.0d; } elif (unit < 3.5d) { 2.0d; } elif (unit < 7.5d) { 5.0d; } else { 10.0d; };
+    return nice * power;
+};
+var label = function(v) {
+    if (Processing.abs(v - Processing.round(v)) < 0.000001d) { return String.From(int(Processing.round(v))); }
+    return String.From(Processing.round(v * 100) / 100.0d);
+};
+var hexDigits = "0123456789abcdef";
+var rgbaOf = function(hex, alpha) {
+    var h = String.Lower(hex);
+    var d = i => String.Find(hexDigits, h[i]);
+    return [d(1) * 16 + d(2), d(3) * 16 + d(4), d(5) * 16 + d(6), alpha];
+};
+var Chart = function(spec, t, width) {
+    var kind = Hash.Get(spec, "kind", "line");
+    var series = Hash.Get(spec, "series", []);
+    var title = Hash.Get(spec, "title", "");
+    var labels = Hash.Get(spec, "labels", null);
+    var height = Hash.Get(spec, "height", 280);
+    # 把每個序列變成點 [x, y]。 / Every series as points [x, y].
+    var data = [];
+    var minX = 1000000000.0d; var maxX = -1000000000.0d; var minY = 1000000000.0d; var maxY = -1000000000.0d;
+    var count = 0;
+    for (var s = 0; s < len(series); s++) {
+        var points = [];
+        var given = series[s];
+        if (given["points"] != null) { points = Array.Map(given["points"], pt => [double(pt[0]), double(pt[1])]); }
+        else {
+            var values = Hash.Get(given, "values", []);
+            for (var i = 0; i < len(values); i++) { Array.Append(points, [double(i), double(values[i])]); }
+        }
+        for (var i = 0; i < len(points); i++) {
+            minX = Processing.min(minX, points[i][0]); maxX = Processing.max(maxX, points[i][0]);
+            minY = Processing.min(minY, points[i][1]); maxY = Processing.max(maxY, points[i][1]);
+        }
+        if (len(points) > count) { count = len(points); }
+        Array.Append(data, {"name": Hash.Get(given, "name", ""), "points": points, "color": t.series[s % len(t.series)]});
+    }
+    if (count == 0) { minX = 0.0d; maxX = 1.0d; minY = 0.0d; maxY = 1.0d; }
+    if (kind == "bar" || kind == "area") { minY = Processing.min(minY, 0.0d); maxY = Processing.max(maxY, 0.0d); }
+    if (maxY == minY) { maxY = minY + 1.0d; }
+    if (maxX == minX) { maxX = minX + 1.0d; }
+    var step = niceStep(maxY - minY);
+    var low = Processing.floor(minY / step) * step;
+    var high = Processing.ceil(maxY / step) * step;
+    var paint = function(p, w, h) {
+        var left = 54.0d; var right = 16.0d; var top = 14.0d; var bottom = 30.0d;
+        var plotW = w - left - right;
+        var plotH = h - top - bottom;
+        var xOf = function(x) {
+            if (kind == "bar") { return left + plotW * (x - minX + 0.5d) / (maxX - minX + 1.0d); }
+            return left + plotW * (x - minX) / (maxX - minX);
+        };
+        var yOf = y => top + plotH * (1.0d - (y - low) / (high - low));
+        var axis = {"color": t.faint, "fontSize": 11};
+        # 格線與 y 軸標籤。 / Grid lines and y labels.
+        for (var v = low; v <= high + step * 0.001d; v += step) {
+            var y = yOf(v);
+            p.Line(left, y, w - right, y, 1, if (Processing.abs(v) < step * 0.001d) { t.strong; } else { t.border; });
+            var text = label(v);
+            var tw = Saturn.MeasureText(text, axis)["width"];
+            p.Text(text, left - 8 - tw, y - 8, axis);
+        }
+        # x 軸標籤（最多 10 個）。 / x labels (at most 10).
+        var ticks = Processing.max(1, Processing.ceil(count / 10.0d));
+        for (var i = 0; i < count; i += int(ticks)) {
+            var x = if (kind == "scatter") { minX + (maxX - minX) * i / Processing.max(1, count - 1); } else { minX + i; };
+            var text = if (labels != null && i < len(labels)) { String.From(labels[i]); } else { label(x); };
+            var tw = Saturn.MeasureText(text, axis)["width"];
+            p.Text(text, xOf(x) - tw / 2, h - bottom + 8, axis);
+        }
+        var groups = len(data);
+        for (var s = 0; s < groups; s++) {
+            var points = data[s]["points"];
+            var color = data[s]["color"];
+            if (kind == "bar") {
+                var slot = plotW / (maxX - minX + 1.0d);
+                var barW = slot * 0.72d / groups;
+                for (var i = 0; i < len(points); i++) {
+                    var x = xOf(points[i][0]) - slot * 0.36d + barW * s;
+                    var y0 = yOf(0.0d);
+                    var y1 = yOf(points[i][1]);
+                    var top2 = Processing.min(y0, y1);
+                    p.Rect(x + 1, top2, barW - 2, Processing.abs(y1 - y0), color, [4, 4, 0, 0]);
+                }
+            } elif (kind == "scatter") {
+                for (var i = 0; i < len(points); i++) { p.Circle(xOf(points[i][0]), yOf(points[i][1]), 4, color); }
+            } else {
+                if (kind == "area" && len(points) > 1) {
+                    var c = rgbaOf(color, 46);
+                    var base = yOf(Processing.max(low, 0.0d));
+                    for (var i = 0; i + 1 < len(points); i++) {
+                        var x0 = xOf(points[i][0]); var x1 = xOf(points[i + 1][0]);
+                        var ya = yOf(points[i][1]); var yb = yOf(points[i + 1][1]);
+                        p.Mesh([x0, ya, 0, 0, c[0], c[1], c[2], c[3], x1, yb, 0, 0, c[0], c[1], c[2], c[3],
+                            x1, base, 0, 0, c[0], c[1], c[2], 0, x0, base, 0, 0, c[0], c[1], c[2], 0], [0, 1, 2, 0, 2, 3]);
+                    }
+                }
+                for (var i = 0; i + 1 < len(points); i++) {
+                    p.Line(xOf(points[i][0]), yOf(points[i][1]), xOf(points[i + 1][0]), yOf(points[i + 1][1]), 2.5d, color);
+                }
+                if (len(points) <= 60) { for (var i = 0; i < len(points); i++) { p.Circle(xOf(points[i][0]), yOf(points[i][1]), 3, color); } }
+            }
+        }
+        return null;
+    };
+    var legend = [for (var s = 0; s < len(data); s++) if (data[s]["name"] != "") UI.Row(gap: 6, crossAxis: "center", children: [
+        UI.Box(style: {"width": 10, "height": 10, "borderRadius": 3, "background": data[s]["color"]}),
+        UI.Text(data[s]["name"], style: {"fontSize": 12, "color": t.muted}),
+    ])];
+    return UI.Column(class: "richCard", crossAxis: "stretch", children: [
+        if (title != "") UI.Text(title, style: {"fontWeight": 700, "fontSize": 15}),
+        if (len(legend) > 0) UI.Row(gap: 14, wrap: true, children: legend),
+        UI.CustomPaint(paint: paint, height: height, style: {"alignSelf": "stretch"}),
+    ]);
+};
+
+# ---- 圖片 / Images ----
+var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+var decodeTable = null;
+var Base64 = function(text) {
+    if (decodeTable == null) {
+        decodeTable = {};
+        for (var i = 0; i < 64; i++) { decodeTable[alphabet[i]] = i; }
+    }
+    var bytes = [];
+    var buffer = 0;
+    var bits = 0;
+    for (var i = 0; i < len(text); i++) {
+        var v = decodeTable[text[i]];
+        if (v == null) { continue; }
+        buffer = ((buffer << 6) | v) & 16777215;
+        bits += 6;
+        if (bits >= 8) { bits -= 8; Array.Append(bytes, (buffer >> bits) & 255); }
+    }
+    return bytes;
+};
+# 解碼過的圖片依內容快取。 / Decoded images, cached by content.
+var images = {};
+var Image = function(base64, metadata, t) {
+    var key = String.From(len(base64)) + ":" + String.Slice(base64, 0, Processing.min(len(base64), 64)) + String.Slice(base64, Processing.max(0, len(base64) - 64), len(base64));
+    var image = images[key];
+    if (image == null) {
+        image = Processing.loadImage(Base64(base64));
+        images[key] = image;
+    }
+    var width = image.width;
+    var height = image.height;
+    if (metadata != null && metadata["width"] != null) { height = height * metadata["width"] / width; width = metadata["width"]; }
+    return UI.Image(image: image, width: width, height: height, fit: "contain", radius: 8);
+};
+
+# ---- JSON ----
+var Json = function(value, t) {
+    var text = Serialization.Json(value);
+    return UI.Box(class: "mdCode", child: UI.Text(if (len(text) > 20000) { String.Slice(text, 0, 20000) + " …"; } else { text; },
+        style: {"fontFamily": "monospace", "fontSize": 13, "color": t.text}));
+};
+
+var Progress = function(spec, t) {
+    var value = Processing.constrain(double(Hash.Get(spec, "value", 0)), 0.0d, 1.0d);
+    var name = Hash.Get(spec, "label", "");
+    return UI.Row(gap: 10, crossAxis: "center", children: [
+        UI.Box(style: {"width": 280, "height": 8, "borderRadius": 4, "background": t.border, "overflow": "hidden"},
+            child: UI.Box(style: {"width": 280 * value, "height": 8, "borderRadius": 4, "background": t.gradient, "transition": 200})),
+        UI.Text(String.From(int(value * 100)) + "%", style: {"fontFamily": "monospace", "fontSize": 12, "color": t.muted}),
+        if (name != "") UI.Text(name, style: {"fontSize": 13}),
+    ]);
+};
+
+var PlainText = (text, t) => UI.Text(text, class: "stream");
+
+# MIME 類型的優先順序與繪製方式。 / MIME types in order of preference, with their renderers.
+var renderers = [
+    ["application/vnd.wellplay.progress+json", (v, m, t, w) => Progress(v, t)],
+    ["application/vnd.wellplay.chart+json", (v, m, t, w) => Chart(v, t, w)],
+    ["application/vnd.wellplay.table+json", (v, m, t, w) => Table(v, t)],
+    ["image/png", (v, m, t, w) => Image(v, m, t)],
+    ["image/jpeg", (v, m, t, w) => Image(v, m, t)],
+    ["image/gif", (v, m, t, w) => Image(v, m, t)],
+    ["text/markdown", (v, m, t, w) => Markdown(v, t)],
+    ["application/json", (v, m, t, w) => Json(v, t)],
+    ["text/plain", (v, m, t, w) => PlainText(v, t)],
+];
+var Bundle = function(data, metadata, t, width) {
+    for (var i = 0; i < len(renderers); i++) {
+        var mime = renderers[i][0];
+        if (data[mime] != null) {
+            var meta = if (metadata == null) { null; } else { metadata[mime]; };
+            return renderers[i][1](data[mime], meta, t, width);
+        }
+    }
+    return UI.Text("[" + String.Join(Hash.Keys(data), ", ") + "]", style: {"color": t.faint});
+};
+
+# 一個 nbformat 輸出。 / One nbformat output.
+var Output = function(output, t, width) {
+    var type = output["output_type"];
+    if (type == "stream") {
+        var text = output["text"];
+        if (String.EndsWith(text, NL)) { text = String.Slice(text, 0, len(text) - 1); }
+        return UI.Text(text, class: if (output["name"] == "stderr") { "stderr"; } else { "stream"; });
+    }
+    if (type == "error") {
+        var lines = Hash.Get(output, "traceback", []);
+        return UI.Column(class: "errorBox", crossAxis: "stretch", children: [
+            UI.Text(output["ename"], class: "errorName"),
+            UI.Text(output["evalue"], class: "errorText"),
+            # 其餘的追蹤行（第一行通常重複名稱與值）。 / The other traceback lines (the first usually repeats name and value).
+            for (var i = 1; i < len(lines); i++) UI.Text(lines[i], class: "errorText", style: {"color": t.muted}),
+        ]);
+    }
+    if (type == "execute_result") {
+        return UI.Row(gap: 10, children: [
+            UI.Text("Out[" + String.From(output["execution_count"]) + "]", class: "outLabel", style: {"paddingTop": 2}),
+            UI.Expanded(child: Bundle(output["data"], output["metadata"], t, width)),
+        ]);
+    }
+    return Bundle(output["data"], output["metadata"], t, width);
+};

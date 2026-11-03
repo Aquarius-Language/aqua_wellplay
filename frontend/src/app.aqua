@@ -1,0 +1,386 @@
+##
+前端的狀態與動作：與伺服器的連線（JSON-RPC over WebSocket）、檔案、開啟的筆記本、儲存格的編輯與執行。視圖（views.aqua）
+只讀狀態並呼叫這裡的動作；每個動作之後 SaturnUI 會重建畫面。
+The frontend's state and actions: the connection to the server (JSON-RPC over WebSocket), files, open notebooks, cell
+editing and execution. The views (views.aqua) only read the state and call these actions; SaturnUI rebuilds after each.
+##
+var rpc = import("AquaJSONRPC");
+var Network = import("Network");
+var Application = import("Application");
+var Storage = import("Storage");
+
+struct Doc { path; name; notebook; dirty; selected; editing; markdownEditing; editors; status; durations; kernel; savedAt; changedAt; pendingClear }
+struct App {
+    endpoint; status; info; dir; files; docs; active; dark; sidebar; toast; toastAt; toastKind; dialog; surface;
+    editors; theme; rebuild; pendingD; scrollTo
+}
+
+var NL = String.FromCode(10);
+var now = () => currentTime();
+
+var Create = function(editors, theme) {
+    var dark = Storage.GetPreference("wellplay.dark");
+    if (dark == null) { dark = import("Interaction").Conventions().darkMode; }
+    return App(endpoint: null, status: "connecting", info: null, dir: "", files: [], docs: [], active: -1, dark: dark == true,
+        sidebar: true, toast: null, toastAt: 0, toastKind: "info", dialog: null, surface: null, editors: editors, theme: theme,
+        rebuild: null, pendingD: 0, scrollTo: null);
+};
+
+var Toast = function(app, text, kind = "info") {
+    app.toast = text;
+    app.toastKind = kind;
+    app.toastAt = now();
+    return null;
+};
+var failed = (app, what) => (error => { Toast(app, what + ": " + Hash.Get(error, "message", String.From(error)), "error"); return null; });
+
+var ActiveDoc = function(app) {
+    if (app.active < 0 || app.active >= len(app.docs)) { return null; }
+    return app.docs[app.active];
+};
+var docOf = function(app, path) {
+    for (var i = 0; i < len(app.docs); i++) { if (app.docs[i].path == path) { return app.docs[i]; } }
+    return null;
+};
+var cellIndex = function(doc, id) {
+    var cells = doc.notebook["cells"];
+    for (var i = 0; i < len(cells); i++) { if (cells[i]["id"] == id) { return i; } }
+    return -1;
+};
+var cellOf = function(doc, id) {
+    var i = cellIndex(doc, id);
+    if (i < 0) { return null; }
+    return doc.notebook["cells"][i];
+};
+var touch = function(doc) { doc.dirty = true; doc.changedAt = now(); return null; };
+
+# ---- 主題 / Themes ----
+var Palette = app => app.theme.Of(app.dark);
+var ToggleTheme = function(app) {
+    app.dark = !app.dark;
+    Storage.SetPreference("wellplay.dark", app.dark);
+    var editorTheme = app.theme.EditorTheme(Palette(app));
+    for (var d = 0; d < len(app.docs); d++) {
+        var keys = Hash.Keys(app.docs[d].editors);
+        for (var k = 0; k < len(keys); k++) { app.editors.SetTheme(app.docs[d].editors[keys[k]], editorTheme); }
+    }
+    if (app.surface != null) {
+        app.surface.SetTheme(app.theme.SaturnTheme(Palette(app)));
+        # 應用程式的樣式表也跟著調色盤。 / The app's style sheet follows the palette too.
+        var sheets = app.surface.sheets;
+        sheets[2] = app.theme.Sheet(Palette(app));
+        app.surface.Rebuild();
+    }
+    return null;
+};
+
+# ---- 儲存格的編輯器 / Cell editors ----
+var EditorOf = function(app, doc, cell) {
+    var editor = doc.editors[cell["id"]];
+    if (editor == null) {
+        var id = cell["id"];
+        editor = app.editors.Create(id, cell["source"], app.theme.EditorTheme(Palette(app)), function(text) {
+            var c = cellOf(doc, id);
+            if (c != null && c["source"] != text) { c["source"] = text; touch(doc); }
+            return null;
+        });
+        doc.editors[id] = editor;
+    }
+    return editor;
+};
+
+# ---- 檔案 / Files ----
+var ListFiles = async function(app, dir) {
+    if (app.endpoint == null) { return null; }
+    var listing = await app.endpoint.Call("files/list", {"path": dir}).Catch(failed(app, "Cannot list " + dir));
+    if (listing != null) { app.dir = dir; app.files = listing; }
+    if (app.surface != null) { app.surface.Rebuild(); }
+    return null;
+};
+var nameOf = function(path) {
+    var parts = String.Split(path, "/");
+    return parts[len(parts) - 1];
+};
+var join = (dir, name) => if (dir == "") { name; } else { dir + "/" + name; };
+var freeName = function(app, base, extension) {
+    var names = Array.Map(app.files, f => f["name"]);
+    var name = base + extension;
+    for (var n = 1; Array.Contains(names, name); n++) { name = base + String.From(n) + extension; }
+    return name;
+};
+
+var Open = async function(app, path) {
+    var existing = docOf(app, path);
+    if (existing != null) { app.active = Array.Index(app.docs, existing); return existing; }
+    var opened = await app.endpoint.Call("notebook/open", {"path": path}).Catch(failed(app, "Cannot open " + path));
+    if (opened == null) { return null; }
+    var kernel = opened["kernel"];
+    var doc = Doc(path: path, name: nameOf(path), notebook: opened["notebook"], dirty: false, selected: 0, editing: null,
+        markdownEditing: [], editors: {}, status: {}, durations: {}, kernel: kernel, savedAt: now(), changedAt: 0, pendingClear: []);
+    if (len(doc.notebook["cells"]) == 0) { Array.Append(doc.notebook["cells"], newCell("code", "")); }
+    Array.Append(app.docs, doc);
+    app.active = len(app.docs) - 1;
+    if (app.surface != null) { app.surface.Rebuild(); }
+    return doc;
+};
+var NewNotebook = async function(app) {
+    var name = freeName(app, "Untitled", ".ipynb");
+    var path = join(app.dir, name);
+    var created = await app.endpoint.Call("files/create", {"path": path, "kind": "notebook"}).Catch(failed(app, "Cannot create " + name));
+    if (created == null) { return null; }
+    await ListFiles(app, app.dir);
+    await Open(app, path);
+    Toast(app, "Created " + name + " · 已建立");
+    return null;
+};
+var NewFolder = async function(app, name) {
+    var created = await app.endpoint.Call("files/create", {"path": join(app.dir, name), "kind": "directory"}).Catch(failed(app, "Cannot create " + name));
+    if (created != null) { await ListFiles(app, app.dir); }
+    return null;
+};
+var Rename = async function(app, path, name) {
+    var parent = String.Slice(path, 0, len(path) - len(nameOf(path)));
+    var target = parent + name;
+    var renamed = await app.endpoint.Call("files/rename", {"from": path, "to": target}).Catch(failed(app, "Cannot rename"));
+    if (renamed == null) { return null; }
+    var doc = docOf(app, path);
+    if (doc != null) { doc.path = target; doc.name = name; }
+    await ListFiles(app, app.dir);
+    return null;
+};
+var Delete = async function(app, path) {
+    var deleted = await app.endpoint.Call("files/delete", {"path": path}).Catch(failed(app, "Cannot delete"));
+    if (deleted == null) { return null; }
+    var doc = docOf(app, path);
+    if (doc != null) { Close(app, Array.Index(app.docs, doc)); }
+    await ListFiles(app, app.dir);
+    Toast(app, "Deleted " + nameOf(path) + " · 已刪除");
+    return null;
+};
+
+# ---- 筆記本 / Notebooks ----
+var newCell = function(type, source) {
+    var bytes = Network.RandomBytes(4);
+    var digits = "0123456789abcdef";
+    var id = "";
+    for (var i = 0; i < 4; i++) { id += digits[bytes[i] >> 4] + digits[bytes[i] & 15]; }
+    if (type == "markdown") { return {"cell_type": "markdown", "id": id, "metadata": {}, "source": source}; }
+    return {"cell_type": "code", "id": id, "metadata": {}, "source": source, "outputs": [], "execution_count": null};
+};
+var Save = async function(app, doc) {
+    if (doc == null || app.endpoint == null) { return false; }
+    var saving = doc.changedAt;
+    var saved = await app.endpoint.Call("notebook/save", {"path": doc.path, "notebook": doc.notebook}).Catch(failed(app, "Cannot save " + doc.name));
+    if (saved == null) { return false; }
+    if (doc.changedAt == saving) { doc.dirty = false; }
+    doc.savedAt = now();
+    if (app.surface != null) { app.surface.Rebuild(); }
+    return true;
+};
+var Close = function(app, index) {
+    var doc = app.docs[index];
+    if (doc.dirty) { Save(app, doc); }
+    Array.Delete(app.docs, index, index + 1);
+    if (app.active >= len(app.docs)) { app.active = len(app.docs) - 1; }
+    return null;
+};
+var Select = function(app, doc, index) {
+    var count = len(doc.notebook["cells"]);
+    if (count == 0) { return null; }
+    doc.selected = if (index < 0) { 0; } elif (index >= count) { count - 1; } else { index; };
+    app.scrollTo = doc.notebook["cells"][doc.selected]["id"];
+    return null;
+};
+var Insert = function(app, doc, index, type) {
+    var cell = newCell(type, "");
+    var cells = doc.notebook["cells"];
+    Array.Append(cells, cell);
+    for (var i = len(cells) - 1; i > index; i -= 1) { cells[i] = cells[i - 1]; }
+    cells[index] = cell;
+    doc.selected = index;
+    if (type == "markdown") { Array.Append(doc.markdownEditing, cell["id"]); }
+    touch(doc);
+    return cell;
+};
+var DeleteCell = function(app, doc, index) {
+    var cells = doc.notebook["cells"];
+    if (index < 0 || index >= len(cells)) { return null; }
+    Hash.Delete(doc.editors, cells[index]["id"]);
+    Array.Delete(cells, index, index + 1);
+    if (len(cells) == 0) { Array.Append(cells, newCell("code", "")); }
+    Select(app, doc, index);
+    touch(doc);
+    return null;
+};
+var Move = function(app, doc, index, delta) {
+    var cells = doc.notebook["cells"];
+    var target = index + delta;
+    if (target < 0 || target >= len(cells)) { return null; }
+    var cell = cells[index];
+    cells[index] = cells[target];
+    cells[target] = cell;
+    doc.selected = target;
+    touch(doc);
+    return null;
+};
+var SetType = function(app, doc, index, type) {
+    var cells = doc.notebook["cells"];
+    var old = cells[index];
+    if (old["cell_type"] == type) { return null; }
+    var cell = newCell(type, old["source"]);
+    cell["id"] = old["id"];
+    cells[index] = cell;
+    if (type == "markdown" && !Array.Contains(doc.markdownEditing, cell["id"])) { Array.Append(doc.markdownEditing, cell["id"]); }
+    touch(doc);
+    return null;
+};
+var ClearOutputs = function(app, doc) {
+    var cells = doc.notebook["cells"];
+    for (var i = 0; i < len(cells); i++) { if (cells[i]["cell_type"] == "code") { cells[i]["outputs"] = []; cells[i]["execution_count"] = null; } }
+    touch(doc);
+    return null;
+};
+
+# ---- 執行 / Running ----
+# 執行儲存格（索引）。Markdown 儲存格只是結束編輯並顯示。 / Run cells by index; Markdown cells just stop editing and
+# render.
+var Run = async function(app, doc, indexes) {
+    var cells = doc.notebook["cells"];
+    var code = [];
+    for (var i = 0; i < len(indexes); i++) {
+        var cell = cells[indexes[i]];
+        if (cell["cell_type"] == "markdown") { doc.markdownEditing = Array.Filter(doc.markdownEditing, id => id != cell["id"]); continue; }
+        if (String.Trim(cell["source"]) == "") { continue; }
+        Array.Append(code, {"id": cell["id"], "source": cell["source"]});
+        doc.status[cell["id"]] = "queued";
+    }
+    if (len(code) == 0) { return null; }
+    if (doc.dirty) { await Save(app, doc); }
+    await app.endpoint.Call("kernel/execute", {"path": doc.path, "cells": code}).Catch(function(error) {
+        for (var i = 0; i < len(code); i++) { Hash.Delete(doc.status, code[i]["id"]); }
+        Toast(app, "Cannot run: " + Hash.Get(error, "message", "?"), "error");
+        return null;
+    });
+    return null;
+};
+var RunAll = function(doc) {
+    var all = [];
+    for (var i = 0; i < len(doc.notebook["cells"]); i++) { Array.Append(all, i); }
+    return all;
+};
+var Interrupt = async function(app, doc) {
+    await app.endpoint.Call("kernel/interrupt", {"path": doc.path}).Catch(failed(app, "Cannot interrupt"));
+    return null;
+};
+var Restart = async function(app, doc) {
+    await app.endpoint.Call("kernel/restart", {"path": doc.path}).Catch(failed(app, "Cannot restart"));
+    Toast(app, "Kernel restarted · 核心已重新啟動");
+    return null;
+};
+
+# ---- 伺服器的通知 / Server notifications ----
+var notify = function(app, method, handler) {
+    app.endpoint.OnNotification(method, function(params) {
+        var doc = docOf(app, params["path"]);
+        if (doc != null) { handler(doc, params); if (app.surface != null) { app.surface.Rebuild(); } }
+        return null;
+    });
+    return null;
+};
+var appendOutput = function(doc, cell, output) {
+    if (Array.Contains(doc.pendingClear, cell["id"])) {
+        cell["outputs"] = [];
+        doc.pendingClear = Array.Filter(doc.pendingClear, x => x != cell["id"]);
+    }
+    var outputs = cell["outputs"];
+    var last = if (len(outputs) > 0) { outputs[len(outputs) - 1]; } else { null; };
+    # 相鄰的同一串流合併。 / Adjacent text of one stream merges.
+    if (last != null && output["output_type"] == "stream" && last["output_type"] == "stream" && last["name"] == output["name"]) {
+        last["text"] = last["text"] + output["text"];
+    } else { Array.Append(outputs, output); }
+    return null;
+};
+var listen = function(app) {
+    notify(app, "kernel/status", function(doc, p) { doc.kernel = {"state": p["state"], "count": p["count"], "queued": p["queued"]}; });
+    notify(app, "kernel/queued", function(doc, p) { doc.status[p["cell"]] = "queued"; });
+    notify(app, "kernel/started", function(doc, p) {
+        var cell = cellOf(doc, p["cell"]);
+        doc.status[p["cell"]] = "running";
+        if (cell != null) { cell["outputs"] = []; cell["execution_count"] = p["count"]; }
+    });
+    notify(app, "kernel/output", function(doc, p) {
+        var cell = cellOf(doc, p["cell"]);
+        if (cell != null) { appendOutput(doc, cell, p["output"]); touch(doc); }
+    });
+    notify(app, "kernel/clear", function(doc, p) {
+        var cell = cellOf(doc, p["cell"]);
+        if (cell == null) { return null; }
+        if (p["wait"]) { Array.Append(doc.pendingClear, p["cell"]); } else { cell["outputs"] = []; }
+    });
+    notify(app, "kernel/update", function(doc, p) {
+        # 有相同 display_id 的輸出原地更新（任何儲存格）。 / Outputs with the display id update in place, in any cell.
+        var cells = doc.notebook["cells"];
+        for (var i = 0; i < len(cells); i++) {
+            if (cells[i]["cell_type"] != "code") { continue; }
+            var outputs = cells[i]["outputs"];
+            for (var o = 0; o < len(outputs); o++) {
+                var transient = outputs[o]["transient"];
+                if (transient != null && transient["display_id"] == p["display"]) { outputs[o] = p["output"]; }
+            }
+        }
+        touch(doc);
+    });
+    notify(app, "kernel/finished", function(doc, p) {
+        Hash.Delete(doc.status, p["cell"]);
+        doc.durations[p["cell"]] = p["milliseconds"];
+        var cell = cellOf(doc, p["cell"]);
+        if (cell != null && p["status"] == "aborted" && cell["execution_count"] == null) { cell["execution_count"] = null; }
+        touch(doc);
+    });
+    notify(app, "kernel/restarted", function(doc, p) { doc.status = {}; });
+    return null;
+};
+
+var Connect = async function(app) {
+    var origin = Network.PageOrigin();
+    if (origin == "") { origin = "http://127.0.0.1:8888"; }
+    var query = Application.Environment("AQUARIUS_QUERY");
+    var token = "";
+    if (query != null) {
+        var parts = String.Split(String.Replace(query, "?", ""), "&");
+        for (var i = 0; i < len(parts); i++) { if (String.StartsWith(parts[i], "token=")) { token = String.Slice(parts[i], 6, len(parts[i])); } }
+    }
+    var url = "ws" + String.Slice(origin, 4, len(origin)) + "/rpc?token=" + token;
+    app.status = "connecting";
+    var opened = await rpc.ConnectWebSocketAsync(url, {"timeout": 8000}).Then(e => e, reason => null);
+    if (opened == null) {
+        app.status = "offline";
+        Toast(app, "Cannot reach the server · 無法連到伺服器", "error");
+        if (app.surface != null) { app.surface.Rebuild(); }
+        return false;
+    }
+    app.endpoint = opened;
+    app.status = "online";
+    opened.OnClose(function(reason) {
+        app.status = "offline";
+        app.endpoint = null;
+        Toast(app, "Disconnected from the server · 與伺服器的連線中斷", "error");
+        if (app.surface != null) { app.surface.Rebuild(); }
+        return null;
+    });
+    listen(app);
+    app.info = await opened.Call("wellplay/info", {}).Catch(e => null);
+    await ListFiles(app, "");
+    return true;
+};
+
+# 每個影格：自動儲存（停止編輯 1.5 秒後）與提示訊息的期限。 / Every frame: autosave 1.5 s after editing stops, and
+# toast expiry.
+var Tick = function(app) {
+    for (var i = 0; i < len(app.docs); i++) {
+        var doc = app.docs[i];
+        if (doc.dirty && doc.changedAt > 0 && now() - doc.changedAt > 1500 && len(doc.status) == 0) { doc.changedAt = 0; Save(app, doc); }
+    }
+    if (app.toast != null && now() - app.toastAt > 3500) { app.toast = null; if (app.surface != null) { app.surface.Rebuild(); } }
+    return null;
+};
