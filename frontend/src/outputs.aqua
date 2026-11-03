@@ -386,10 +386,8 @@ var Bundle = function(data, metadata, t, width) {
     return UI.Text("[" + String.Join(Hash.Keys(data), ", ") + "]", style: {"color": t.faint});
 };
 
-# 一個 nbformat 輸出；繪製失敗只影響這一個輸出。建構介面時用同步的 Saturn.Contain（非同步的 Network.Try 會在每次
-# 重建留下等待中的工作，耗盡原生資源）。 / One nbformat output; a renderer that fails affects only it. Building the
-# interface uses the synchronous Saturn.Contain (the asynchronous Network.Try left a pending task behind on every
-# rebuild, exhausting the native resources).
+# 一個 nbformat 輸出；繪製失敗只影響這一個輸出（建構介面時用同步的 Saturn.Contain）。 / One nbformat output; a
+# renderer that fails affects only it (building the interface uses the synchronous Saturn.Contain).
 var Output = function(output, t, width) {
     var shown = Saturn.Contain(() => render(output, t, width));
     if (shown["Success"]) { return shown["Value"]; }
