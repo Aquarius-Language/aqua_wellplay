@@ -125,8 +125,6 @@ var frame = function() {
     var focused = if (doc != null && doc.editing != null) { doc.editors[doc.editing]; } else { null; };
     if (focused != null) { editors.Update(focused, seconds); }
     appModule.Tick(app);
-    # 有儲存格在執行時，狀態指示燈會閃爍。 / The status light pulses while cells run.
-    if (doc != null && Hash.Get(doc.kernel, "state", "idle") == "busy") { surface.Rebuild(); }
     # 全螢幕的大小在 setup 之後才確定（網頁先報螢幕大小）：每個影格對齊視窗。 / The full-screen size settles after
     # setup (the web reports the screen first): follow the window every frame.
     surface.Resize(p.width, p.height);

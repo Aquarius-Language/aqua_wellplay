@@ -10,6 +10,7 @@ server, as Jupyter kernels do.
 ```powershell
 aqua_wellplay                          # the current folder, http://127.0.0.1:8888/?token=..., opens a browser
 aqua_wellplay D:\notes --port 9000     # another folder and port
+aqua_wellplay D:\notes\Report.ipynb    # a notebook, opened in its folder
 aqua_wellplay --help
 ```
 

@@ -330,7 +330,8 @@ var Base64 = function(text) {
 # 解碼過的圖片依內容快取。 / Decoded images, cached by content.
 var images = {};
 var Image = function(base64, metadata, t) {
-    var key = String.From(len(base64)) + ":" + String.Slice(base64, 0, Processing.min(len(base64), 64)) + String.Slice(base64, Processing.max(0, len(base64) - 64), len(base64));
+    var edge = if (len(base64) < 64) { len(base64); } else { 64; };
+    var key = String.From(len(base64)) + ":" + String.Slice(base64, 0, edge) + String.Slice(base64, len(base64) - edge, len(base64));
     var image = images[key];
     if (image == null) {
         image = Processing.loadImage(Base64(base64));
@@ -339,7 +340,7 @@ var Image = function(base64, metadata, t) {
     var width = image.width;
     var height = image.height;
     if (metadata != null && metadata["width"] != null) { height = height * metadata["width"] / width; width = metadata["width"]; }
-    return UI.Image(image: image, width: width, height: height, fit: "contain", radius: 8);
+    return UI.Image(image: image, width: width, height: height, fit: "contain", radius: 8, style: {"alignSelf": "flex-start"});
 };
 
 # ---- JSON ----
@@ -385,8 +386,13 @@ var Bundle = function(data, metadata, t, width) {
     return UI.Text("[" + String.Join(Hash.Keys(data), ", ") + "]", style: {"color": t.faint});
 };
 
-# 一個 nbformat 輸出。 / One nbformat output.
+# 一個 nbformat 輸出；繪製失敗只影響這一個輸出。 / One nbformat output; a renderer that fails affects only it.
 var Output = function(output, t, width) {
+    var shown = import("Network").Try(() => render(output, t, width));
+    if (shown.Success) { return shown.Value; }
+    return UI.Text("Cannot show this output · 無法顯示這個輸出: " + shown.Error.Message, class: "stderr");
+};
+var render = function(output, t, width) {
     var type = output["output_type"];
     if (type == "stream") {
         var text = output["text"];

@@ -26,7 +26,8 @@ var usage = "aqua_wellplay " + Version + " — AquariusLang notebooks / 星泉�
 
 Usage: aqua_wellplay [folder] [options]
 
-  folder              the folder to serve (default: the current folder) / 提供的資料夾（預設：目前的資料夾）
+  folder | notebook   the folder to serve (default: the current folder), or a notebook to open in its folder
+                      提供的資料夾（預設：目前的資料夾），或要開啟的筆記本
   --port N            the port (default 8888; the next free one is used) / 連接埠
   --host ADDRESS      the address to listen on (default 127.0.0.1) / 監聽位址
   --no-browser        do not open a browser / 不開啟瀏覽器
@@ -107,6 +108,12 @@ var openBrowser = function(url) {
 
 var serve = function() {
     var folder = if (settings["folder"] == null) { "."; } else { settings["folder"]; };
+    # aqua_wellplay notebook.ipynb：提供它的資料夾並開啟它。 / Serve a notebook's folder and open it.
+    var opening = "";
+    if (String.EndsWith(String.Lower(folder), ".ipynb") && exists(folder)) {
+        opening = Paths.Name(folder);
+        folder = Paths.Parent(String.Replace(Files.Resolve(folder).id, "\\", "/"));
+    }
     var root = Files.Resolve(folder);
     var info = Files.Stat(root);
     if (!info.exists || info.kind != 1) { print("Not a folder / 不是資料夾: " + folder); return 1; }
@@ -164,7 +171,10 @@ var serve = function() {
         return null;
     });
 
-    var url = origin + "/" + if (token == "") { ""; } else { "?token=" + token; };
+    var query = [];
+    if (token != "") { Array.Append(query, "token=" + token); }
+    if (opening != "") { Array.Append(query, "open=" + String.Replace(opening, " ", "%20")); }
+    var url = origin + "/" + if (len(query) == 0) { ""; } else { "?" + String.Join(query, "&"); };
     log("Serving / 提供 " + workspace.root);
     log("Compiler / 編譯器 " + aqua);
     log("Open / 開啟 " + url);

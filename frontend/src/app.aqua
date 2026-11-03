@@ -341,14 +341,33 @@ var listen = function(app) {
     return null;
 };
 
+# 網址的百分比編碼解回文字（UTF-8）。 / Percent-encoding decoded back to text (UTF-8).
+var decodeComponent = function(text) {
+    var hex = "0123456789abcdef";
+    var bytes = [];
+    for (var i = 0; i < len(text); i++) {
+        var c = text[i];
+        if (c == "%" && i + 2 < len(text)) {
+            Array.Append(bytes, String.Find(hex, String.Lower(text[i + 1])) * 16 + String.Find(hex, String.Lower(text[i + 2])));
+            i += 2;
+        } elif (c == "+") { Array.Append(bytes, 32); }
+        else { Array.AppendArray(bytes, Network.TextToBytes(c)); }
+    }
+    return Network.BytesToText(bytes);
+};
 var Connect = async function(app) {
     var origin = Network.PageOrigin();
     if (origin == "") { origin = "http://127.0.0.1:8888"; }
     var query = Application.Environment("AQUARIUS_QUERY");
     var token = "";
+    var open = null;
     if (query != null) {
         var parts = String.Split(String.Replace(query, "?", ""), "&");
-        for (var i = 0; i < len(parts); i++) { if (String.StartsWith(parts[i], "token=")) { token = String.Slice(parts[i], 6, len(parts[i])); } }
+        for (var i = 0; i < len(parts); i++) {
+            if (String.StartsWith(parts[i], "token=")) { token = String.Slice(parts[i], 6, len(parts[i])); }
+            # ?open=path：開啟一個筆記本（aqua_wellplay notebook.ipynb）。 / ?open=path opens a notebook.
+            if (String.StartsWith(parts[i], "open=")) { open = decodeComponent(String.Slice(parts[i], 5, len(parts[i]))); }
+        }
     }
     var url = "ws" + String.Slice(origin, 4, len(origin)) + "/rpc?token=" + token;
     app.status = "connecting";
@@ -371,6 +390,7 @@ var Connect = async function(app) {
     listen(app);
     app.info = await opened.Call("wellplay/info", {}).Catch(e => null);
     await ListFiles(app, "");
+    if (open != null) { await Open(app, open); }
     return true;
 };
 

@@ -33,9 +33,8 @@ var KernelPill = function(app, doc, t) {
     if (doc == null) { return UI.Row(class: "pill", children: [UI.Box(class: "dot", style: {"background": t.success}), UI.Text("Connected · 已連線")]); }
     var state = Hash.Get(doc.kernel, "state", "idle");
     var busy = state == "busy";
-    var pulse = 0.55d + 0.45d * import("Processing").sin(currentTime() / 180.0d);
     return UI.Row(class: "pill", children: [
-        UI.Box(class: "dot", style: {"background": if (busy) { t.warning; } else { t.success; }, "opacity": if (busy) { pulse; } else { 1; }}),
+        UI.Box(class: "dot", style: {"background": if (busy) { t.warning; } else { t.success; }}),
         UI.Text(if (busy) { "Running · 執行中"; } else { "Kernel idle · 核心閒置"; }),
         UI.Text("AquariusLang", style: {"color": t.faint}),
     ]);
