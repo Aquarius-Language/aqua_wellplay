@@ -12,7 +12,7 @@ var Storage = import("Storage");
 struct Doc { path; name; notebook; dirty; selected; editing; markdownEditing; editors; status; durations; kernel; savedAt; changedAt; pendingClear }
 struct App {
     endpoint; status; info; dir; files; docs; active; dark; sidebar; toast; toastAt; toastKind; dialog; surface;
-    editors; theme; rebuild; pendingD; scrollTo; menu; examples; galleryOpen; clipboard
+    editors; theme; rebuild; pendingD; scrollTo; examples; galleryOpen; clipboard
 }
 
 var NL = String.FromCode(10);
@@ -23,7 +23,7 @@ var Create = function(editors, theme) {
     if (dark == null) { dark = import("Interaction").Conventions().darkMode; }
     return App(endpoint: null, status: "connecting", info: null, dir: "", files: [], docs: [], active: -1, dark: dark == true,
         sidebar: true, toast: null, toastAt: 0, toastKind: "info", dialog: null, surface: null, editors: editors, theme: theme,
-        rebuild: null, pendingD: 0, scrollTo: null, menu: null, examples: null, galleryOpen: false, clipboard: null);
+        rebuild: null, pendingD: 0, scrollTo: null, examples: null, galleryOpen: false, clipboard: null);
 };
 
 var Toast = function(app, text, kind = "info") {

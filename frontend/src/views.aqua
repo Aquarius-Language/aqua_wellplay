@@ -116,52 +116,22 @@ var MenuSpecs = function(app) {
     ];
 };
 
-# 選單從它的標題下方打開（標題在上一次排版的位置）。 / A menu opens under its title (where the last layout put it).
-var menuX = function(app, name) {
-    var found = findKeyed(app.surface.tree, name);
-    if (found == null) { return 120; }
-    return found.node.GetAbsoluteLayout()["x"];
-};
-var findKeyed = function(e, key) {
-    if (e.widget != null && e.type == "Box" && e.widget.key == key) { return e; }
-    for (var i = 0; i < len(e.children); i++) {
-        var found = findKeyed(e.children[i], key);
-        if (found != null) { return found; }
-    }
-    return null;
-};
+# 選單列用 SaturnUI 的 MenuBar：按標題打開、移到別的標題就換選單、按選單外關閉、方向鍵與 Esc 都照原生規則。 / The menu
+# bar is SaturnUI's MenuBar: a press opens a menu, moving over another title switches, a press outside closes it, and
+# the arrow keys and Escape work as in native menus.
 var MenuBar = function(app, t, specs) {
-    var titles = [];
+    var menus = [];
     for (var i = 0; i < len(specs); i++) {
-        var name = specs[i][0];
-        Array.Append(titles, UI.Box(class: if (app.menu == name) { "menuTitle open"; } else { "menuTitle"; }, key: name,
-            onPress: e => { app.menu = if (app.menu == name) { null; } else { name; }; },
-            onHover: inside => { if (inside && app.menu != null && app.menu != name) { app.menu = name; } },
-            child: UI.Text(name)));
+        var items = [];
+        var spec = specs[i][1];
+        for (var j = 0; j < len(spec); j++) {
+            var item = spec[j];
+            if (typeOf(item) == "string") { Array.Append(items, UI.MenuSeparator()); continue; }
+            Array.Append(items, UI.MenuItem(label: item[0], shortcut: if (item[1] == "") { null; } else { item[1]; }, onSelect: item[2], disabled: item[3] != true));
+        }
+        Array.Append(menus, UI.Menu(label: specs[i][0], items: items));
     }
-    return UI.Row(gap: 2, crossAxis: "center", children: titles);
-};
-var MenuDropdown = function(app, t, specs) {
-    if (app.menu == null) { return null; }
-    var index = -1;
-    for (var i = 0; i < len(specs); i++) { if (specs[i][0] == app.menu) { index = i; } }
-    if (index < 0) { return null; }
-    var rows = [];
-    var items = specs[index][1];
-    for (var i = 0; i < len(items); i++) {
-        var item = items[i];
-        if (typeOf(item) == "string") { Array.Append(rows, UI.Box(class: "menuRule")); continue; }
-        var enabled = item[3] == true;
-        var action = item[2];
-        Array.Append(rows, UI.Box(class: if (enabled) { "menuItem"; } else { "menuItem disabled"; }, key: item[0],
-            onTap: () => { if (enabled) { app.menu = null; action(); } },
-            children: [UI.Expanded(child: UI.Text(item[0], maxLines: 1)), if (item[1] != "") UI.Text(item[1], class: "menuKey")]));
-    }
-    return [
-        # 點選單外的任何地方關閉選單。 / A tap anywhere outside closes the menu.
-        UI.Positioned(left: 0, top: 0, right: 0, bottom: 0, child: UI.Box(style: {"flexGrow": 1}, onPress: e => { app.menu = null; })),
-        UI.Positioned(left: menuX(app, app.menu), top: 46, child: UI.Column(class: "menu", crossAxis: "stretch", children: rows)),
-    ];
+    return UI.MenuBar(menus: menus, key: "menus");
 };
 
 var TopBar = function(app, t, specs) {
@@ -522,12 +492,10 @@ var Root = function(app) {
             ]),
             StatusBar(app, t),
         ]),
-        ...listOf(MenuDropdown(app, t, specs)),
         Toast(app, t),
         Dialog(app, t),
     ]);
 };
-var listOf = value => if (value == null) { []; } else { value; };
 
 # ---- 鍵盤焦點 / Keyboard focus ----
 # 找到某個儲存格的編輯器元素，讓它取得焦點（編輯模式）。 / Find a cell's editor element and focus it (edit mode).

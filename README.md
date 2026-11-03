@@ -33,7 +33,9 @@ It ships beside `aqua` in the AquariusLang package, so the package folder on `PA
 - **Menu bar**: File (new notebook or folder, **Examples…**, save, rename, close), Edit (cut, copy, paste, duplicate,
   delete, insert and move cells, change their type, clear outputs), View (file browser, theme, gallery), Run (run and
   advance, run all, run above, run below), Kernel (interrupt, restart, restart and clear, restart and run all), Help
-  (shortcuts, the Display API, the welcome tour, about).
+  (shortcuts, the Display API, the welcome tour, about). It is SaturnUI's `MenuBar`, so it behaves like a native one: menus open on press,
+  hovering another title switches, a press outside closes the menu without reaching what is under it, and the arrow
+  keys, Enter and Escape work.
 - **Examples**: File › Examples opens a gallery of ready-to-run notebooks in seven groups: Warm-Up Spells (Prime
   Hunters' Almanac, Collatz Rollercoaster, Struct Menagerie, Bitwise Bakery, Word Alchemist), Number Lab (Monte Carlo
   Dartboard, Random Walk Weather Station, Golden Ratio Treasure Hunt, Sorting Hat Race), Async & Network (Async Coffee

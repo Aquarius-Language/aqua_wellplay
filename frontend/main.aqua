@@ -45,7 +45,6 @@ var handleKey = function(e) {
     var name = letter(e);
     if (primary && name == "s") { appModule.Save(app, appModule.ActiveDoc(app)); return true; }
     if (primary && name == "b") { app.sidebar = !app.sidebar; surface.Rebuild(); return true; }
-    if (key == KeyEscape && app.menu != null) { app.menu = null; surface.Rebuild(); return true; }
     var doc = appModule.ActiveDoc(app);
     if (doc == null || app.dialog != null) { return false; }
     var editing = doc.editing != null;
@@ -105,7 +104,8 @@ var setup = function() {
     session = ix.Attach(p.platformWindow);
     # 一個錯誤只成為提示訊息，介面繼續運作。 / An error becomes a toast; the interface keeps working.
     session.On("*", function(event) {
-        var handled = Network.Try(() => handleKey(event) || surface.Feed(event));
+        # 開著的選單先拿到按鍵。 / An open menu gets the keys first.
+        var handled = Network.Try(() => (!surface.HasPopup() && handleKey(event)) || surface.Feed(event));
         if (handled.Success) { return handled.Value; }
         report(handled.Error.Message);
         return true;
