@@ -44,4 +44,4 @@ their `edit` action (Interaction's editing table), so word moves, line ends, wor
 platform's rules.
 `tests/editor.aqua` feeds events through an Interaction session and prints `EDITOR_OK`; `examples/processing` is a
 Processing host (desktop, web, Android); [AquaLab](../AquariusLangTW_AquaLab) embeds it in a full-stack web app.
-Needs an AquariusLang runtime with async functions and Interaction's `text` events and cursor areas (the release after 0.1.6).
+Needs an AquariusLang runtime with async functions and Interaction's `text` events and cursor areas (AquariusLang 0.1.7 or later).
