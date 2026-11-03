@@ -381,47 +381,52 @@ var _moveVertical = function(editor, lines, extend) {
     return true;
 };
 
+# 按鍵的意義來自「互動」的編輯表（e.edit），所以各平台的規則一致：Windows／Linux 用 Ctrl＋方向鍵跳字、Home／End 到行頭行尾，
+# Apple 用 Option／Command；數字鍵盤在 Num Lock 關閉時也是方向鍵。 / What a key means comes from Interaction's editing table
+# (e.edit), so every platform's rules hold: Ctrl+arrows by words and Home/End on Windows and Linux, Option and Command on
+# Apple targets, the keypad's navigation keys with Num Lock off.
 var HandleKey = function(editor, e) {
     if (e.action == "release") { return false; }
     var key = e.key;
     if (key == KeyPadEnter) { key = KeyEnter; }   # 數字鍵盤的 Enter。 / The keypad's Enter.
     var shift = e.shift == true;
-    var word = e.primary == true || e.alt == true;
+    var edit = e.edit;
     if (editor.completion != null) {
         var items = editor.completion["items"];
         if (key == KeyDown) { editor.completion["selected"] = (editor.completion["selected"] + 1) % len(items); return true; }
         if (key == KeyUp) { editor.completion["selected"] = (editor.completion["selected"] + len(items) - 1) % len(items); return true; }
         if (key == KeyEnter || key == KeyTab) { AcceptCompletion(editor); return true; }
     }
-    if (key == KeyLeft) {
+    if (edit == "left" || edit == "wordLeft") {
         editor.preferredX = -1.0d;
         if (HasSelection(editor) && !shift) { SetCursor(editor, SelectionRange(editor)[0], false); return true; }
-        if (word) { SetCursor(editor, buffers.WordBoundary(editor.buffer, editor.cursor, -1), shift); return true; }
+        if (edit == "wordLeft") { SetCursor(editor, buffers.WordBoundary(editor.buffer, editor.cursor, -1), shift); return true; }
         var p = editor.cursor;
         if (p.character > 0) { SetCursor(editor, buffers.Pos(p.line, p.character - 1), shift); }
         else if (p.line > 0) { SetCursor(editor, buffers.Pos(p.line - 1, len(buffers.Line(editor.buffer, p.line - 1))), shift); }
         editor.completion = null;
         return true;
     }
-    if (key == KeyRight) {
+    if (edit == "right" || edit == "wordRight") {
         editor.preferredX = -1.0d;
         if (HasSelection(editor) && !shift) { SetCursor(editor, SelectionRange(editor)[1], false); return true; }
-        if (word) { SetCursor(editor, buffers.WordBoundary(editor.buffer, editor.cursor, 1), shift); return true; }
+        if (edit == "wordRight") { SetCursor(editor, buffers.WordBoundary(editor.buffer, editor.cursor, 1), shift); return true; }
         var p = editor.cursor;
         if (p.character < len(buffers.Line(editor.buffer, p.line))) { SetCursor(editor, buffers.Pos(p.line, p.character + 1), shift); }
         else if (p.line + 1 < LineCount(editor)) { SetCursor(editor, buffers.Pos(p.line + 1, 0), shift); }
         editor.completion = null;
         return true;
     }
-    if (key == KeyUp) { editor.completion = null; return _moveVertical(editor, -1, shift); }
-    if (key == KeyDown) { editor.completion = null; return _moveVertical(editor, 1, shift); }
+    if (edit == "up") { editor.completion = null; return _moveVertical(editor, -1, shift); }
+    if (edit == "down") { editor.completion = null; return _moveVertical(editor, 1, shift); }
     var page = int(editor.view.height / editor.lineHeight) - 1;
     if (page < 1) { page = 1; }
-    if (key == KeyPageUp) { ScrollView.ScrollBy(editor.view, 0, -page * editor.lineHeight); return _moveVertical(editor, -page, shift); }
-    if (key == KeyPageDown) { ScrollView.ScrollBy(editor.view, 0, page * editor.lineHeight); return _moveVertical(editor, page, shift); }
-    if (key == KeyHome) {
+    if (edit == "pageUp") { ScrollView.ScrollBy(editor.view, 0, -page * editor.lineHeight); return _moveVertical(editor, -page, shift); }
+    if (edit == "pageDown") { ScrollView.ScrollBy(editor.view, 0, page * editor.lineHeight); return _moveVertical(editor, page, shift); }
+    if (edit == "documentStart") { editor.preferredX = -1.0d; SetCursor(editor, buffers.Pos(0, 0), shift); return true; }
+    if (edit == "documentEnd") { editor.preferredX = -1.0d; SetCursor(editor, buffers.End(editor.buffer), shift); return true; }
+    if (edit == "lineStart") {
         editor.preferredX = -1.0d;
-        if (e.primary == true) { SetCursor(editor, buffers.Pos(0, 0), shift); return true; }
         # 先到第一個非空白字元，再到行首。 / First to the first non-space character, then to the line start.
         var indent = len(buffers.Indentation(editor.buffer, editor.cursor.line));
         var column = indent;
@@ -429,16 +434,30 @@ var HandleKey = function(editor, e) {
         SetCursor(editor, buffers.Pos(editor.cursor.line, column), shift);
         return true;
     }
-    if (key == KeyEnd) {
+    if (edit == "lineEnd") {
         editor.preferredX = -1.0d;
-        if (e.primary == true) { SetCursor(editor, buffers.End(editor.buffer), shift); return true; }
         SetCursor(editor, buffers.Pos(editor.cursor.line, len(buffers.Line(editor.buffer, editor.cursor.line))), shift);
         return true;
     }
     if (editor.readOnly) { return false; }
-    if (key == KeyBackspace) { if (word && !HasSelection(editor)) { DeleteRange(editor, buffers.WordBoundary(editor.buffer, editor.cursor, -1), editor.cursor); } else { Backspace(editor); } _refreshCompletion(editor); return true; }
-    if (key == KeyDelete) { if (word && !HasSelection(editor)) { DeleteRange(editor, editor.cursor, buffers.WordBoundary(editor.buffer, editor.cursor, 1)); } else { DeleteForward(editor); } return true; }
-    if (key == KeyEnter) { NewLine(editor); return true; }
+    var lineStart = buffers.Pos(editor.cursor.line, 0);
+    var lineEnd = buffers.Pos(editor.cursor.line, len(buffers.Line(editor.buffer, editor.cursor.line)));
+    if (edit == "deleteBackward") { Backspace(editor); _refreshCompletion(editor); return true; }
+    if (edit == "deleteForward") { DeleteForward(editor); return true; }
+    if (edit == "deleteWordBackward" || edit == "deleteToLineStart") {
+        if (HasSelection(editor)) { Backspace(editor); }
+        elif (edit == "deleteWordBackward") { DeleteRange(editor, buffers.WordBoundary(editor.buffer, editor.cursor, -1), editor.cursor); }
+        else { DeleteRange(editor, lineStart, editor.cursor); }
+        _refreshCompletion(editor);
+        return true;
+    }
+    if (edit == "deleteWordForward" || edit == "deleteToLineEnd") {
+        if (HasSelection(editor)) { DeleteForward(editor); }
+        elif (edit == "deleteWordForward") { DeleteRange(editor, editor.cursor, buffers.WordBoundary(editor.buffer, editor.cursor, 1)); }
+        else { DeleteRange(editor, editor.cursor, lineEnd); }
+        return true;
+    }
+    if (edit == "newline") { NewLine(editor); return true; }
     if (key == KeyTab && e.primary != true) { Indent(editor, shift); return true; }
     if (key == KeySpace && e.primary == true) { RequestCompletion(editor, true); return true; }
     # 文字來自 "text" 事件（視窗的文字輸入與輸入法），不是按鍵名稱。 / Text comes from "text" events (the window's text

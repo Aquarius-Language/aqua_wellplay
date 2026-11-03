@@ -426,11 +426,11 @@ var Dialog = function(app, t) {
     var action = null;
     if (kind == "rename") {
         title = "Rename · 重新命名";
-        content = UI.TextField(value: d["value"], width: 320, onChanged: v => { d["value"] = v; }, onSubmit: v => { M.app.Rename(app, d["path"], v); app.dialog = null; });
+        content = UI.TextField(value: d["value"], width: 320, autofocus: true, onChanged: v => { d["value"] = v; }, onSubmit: v => { M.app.Rename(app, d["path"], v); app.dialog = null; });
         action = UI.Button("Rename", onPress: () => { M.app.Rename(app, d["path"], d["value"]); app.dialog = null; });
     } elif (kind == "folder") {
         title = "New folder · 新資料夾";
-        content = UI.TextField(value: d["value"], width: 320, placeholder: "Folder name", onChanged: v => { d["value"] = v; }, onSubmit: v => { M.app.NewFolder(app, v); app.dialog = null; });
+        content = UI.TextField(value: d["value"], width: 320, autofocus: true, placeholder: "Folder name", onChanged: v => { d["value"] = v; }, onSubmit: v => { M.app.NewFolder(app, v); app.dialog = null; });
         action = UI.Button("Create", onPress: () => { M.app.NewFolder(app, d["value"]); app.dialog = null; });
     } elif (kind == "delete") {
         title = "Delete · 刪除";
