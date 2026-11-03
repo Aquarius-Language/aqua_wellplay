@@ -125,7 +125,7 @@ kernel/display.aqua         the display module compiled in front of every cell p
 frontend/                   the web app: main.aqua (window, input, shortcuts), src/app.aqua (state, connection,
                             actions), src/views.aqua (screens), src/editors.aqua (cell editors), src/outputs.aqua
                             (renderers, Markdown, charts), src/theme.aqua (palettes, style sheet)
-libraries/                  vendored copies of Aqua_Embedded_LSP_Editor and Aqua_JSON-RPC (see libraries/README.md)
+libraries/                  Aqua_Embedded_LSP_Editor and Aqua_JSON-RPC, submodules (see libraries/README.md)
 examples/<NN Group>/        the example gallery (examples/README.md: how to add one)
 tests/                      run.ps1 + client/: the end-to-end test against a running server
 build.ps1, build.sh         build into a package folder (the AquariusLang release runs them)
@@ -133,7 +133,7 @@ build.ps1, build.sh         build into a package folder (the AquariusLang releas
 
 ## Building and testing
 
-In the AquariusLangTW repository (`tools/aqua_wellplay` is a submodule: `git submodule update --init`), the release
+In the AquariusLangTW repository (`tools/aqua_wellplay` is a submodule with submodules of its own: `git submodule update --init --recursive`), the release
 builds it: `scripts/publish-cli.ps1` runs `build.ps1 -Aqua <published aqua> -Output dist/aqua`, which writes
 `aqua_wellplay.exe`, `wellplay/site/` (the frontend) and `wellplay/kernel/`. By hand:
 
@@ -150,10 +150,10 @@ Nothing here is copied from AquariusLang: the server and the frontend build with
 Terminal, SaturnUI, ImGui, Clay, Processing...) of the `aqua` that builds them, and the AquariusLang release builds
 this folder with the aqua it just published and runs `tests/run.ps1` against it. The superproject pins one commit of
 this repository; updating WellPlay is `git submodule update --remote tools/aqua_wellplay` plus a commit there, and a
-change to the language or a library that breaks WellPlay fails the release that introduces it. The only copies are
-the two libraries in `libraries/` (they are not part of AquariusLang; see libraries/README.md).
+change to the language or a library that breaks WellPlay fails the release that introduces it. The two libraries in
+`libraries/` are not part of AquariusLang: each is its own repository, linked as a submodule (libraries/README.md).
 
-Development builds use the vendored libraries through Bottle; when you change one, raise its version (or remove its
+Development builds use the library submodules through Bottle; when you change one, raise its version (or remove its
 cached copy with `aqua bottle cache remove <name> <version>`), because the cache keeps one immutable copy per version.
 `build.ps1` and `tests/run.ps1` use a cache of their own.
 
@@ -162,4 +162,4 @@ SaturnUI (AquariusLangTW after 0.1.6). The frontend needs a browser with WebGPU 
 
 ## License
 
-MIT (see LICENSE). The vendored libraries keep their own licenses.
+MIT (see LICENSE). The libraries in libraries/ keep their own licenses.

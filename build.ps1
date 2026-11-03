@@ -4,12 +4,20 @@
 #   <Output>/wellplay/kernel/           the display module every cell program starts with
 #   <Output>/wellplay/examples/         the example gallery (File › Examples)
 #   ./build.ps1 -Aqua path/to/aqua -Output path/to/folder
-# AquariusLangTW's scripts/publish-cli.ps1 runs it with the freshly published aqua. The vendored libraries build from a
-# Bottle cache of their own (in the output's temporary folder), so they never meet other copies of the same versions.
+# AquariusLangTW's scripts/publish-cli.ps1 runs it with the freshly published aqua. The libraries (submodules) build from
+# a Bottle cache of their own (in the output's temporary folder), so they never meet other copies of the same versions.
 param([string]$Aqua = 'aqua', [Parameter(Mandatory = $true)][string]$Output)
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSEdition -eq 'Desktop') { $IsWindows = $true }
 $root = $PSScriptRoot
+# The libraries are submodules (libraries/README.md): fetch them when a clone has not.
+foreach ($library in @('Aqua_Embedded_LSP_Editor', 'Aqua_JSON-RPC')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $root "libraries/$library/aqua.toml"))) {
+        & git -C $root submodule update --init --recursive
+        if ($LASTEXITCODE -ne 0) { throw 'Fetching the library submodules failed (git submodule update --init --recursive).' }
+        break
+    }
+}
 $aquaPath = (Get-Command $Aqua -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $Output = [IO.Path]::GetFullPath($Output)
 $work = Join-Path ([IO.Path]::GetTempPath()) "aqua-wellplay-build-$([Guid]::NewGuid().ToString('N'))"

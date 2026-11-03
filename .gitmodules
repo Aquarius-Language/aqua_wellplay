@@ -1,0 +1,8 @@
+[submodule "libraries/Aqua_Embedded_LSP_Editor"]
+	path = libraries/Aqua_Embedded_LSP_Editor
+	url = https://github.com/Aquarius-Language/Aqua_Embedded_LSP_Editor.git
+	branch = master
+[submodule "libraries/Aqua_JSON-RPC"]
+	path = libraries/Aqua_JSON-RPC
+	url = https://github.com/Aquarius-Language/Aqua_JSON-RPC.git
+	branch = master

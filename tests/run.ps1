@@ -11,7 +11,7 @@ $notebooks = Join-Path $work 'notebooks'
 $site = Join-Path $work 'site'
 New-Item -ItemType Directory -Path $notebooks, $site | Out-Null
 Set-Content -LiteralPath (Join-Path $site 'index.html') -Value '<!doctype html><title>test</title>'
-# A cache of its own: the vendored libraries never meet other copies of the same versions.
+# A cache of its own: the libraries never meet other copies of the same versions.
 $env:AQUA_BOTTLE_HOME = Join-Path $work 'bottles'
 $token = 'test-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $log = Join-Path $work 'server.log'

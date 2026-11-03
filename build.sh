@@ -7,7 +7,11 @@ aqua=${1:?"usage: build.sh path/to/aqua output-folder"}
 output=$(mkdir -p "${2:?"usage: build.sh path/to/aqua output-folder"}" && cd -- "$2" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"; find "$root" -name aqua.lock.json -delete' EXIT
-# A Bottle cache of its own: the vendored libraries never meet other copies of the same versions.
+# The libraries are submodules (libraries/README.md): fetch them when a clone has not.
+for library in Aqua_Embedded_LSP_Editor Aqua_JSON-RPC; do
+    if [ ! -f "$root/libraries/$library/aqua.toml" ]; then git -C "$root" submodule update --init --recursive; break; fi
+done
+# A Bottle cache of its own: the libraries never meet other copies of the same versions.
 export AQUA_BOTTLE_HOME="$work/bottles"
 find "$root" -name aqua.lock.json -delete
 rm -rf "$output/wellplay"

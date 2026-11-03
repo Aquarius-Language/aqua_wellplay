@@ -1,12 +1,13 @@
-# Vendored libraries
+# Libraries
 
-Copies of two AquariusLang libraries that aqua_wellplay builds with, kept here so the tool builds from its own
-repository alone. They are path dependencies of `aqua.toml` and `frontend/aqua.toml`.
+Two AquariusLang libraries aqua_wellplay builds with, each its own repository linked here as a git submodule (pinned to
+one commit; `git submodule update --init --recursive` fetches them, and `build.ps1` / `build.sh` do it when they are
+missing). They are path dependencies of `aqua.toml` and `frontend/aqua.toml`.
 
-| Library | Version | Source | Changes here |
-| --- | --- | --- | --- |
-| `Aqua_JSON-RPC` | 1.0.0 | Aqua_JSON-RPC (35db0ea) | none |
-| `Aqua_Embedded_LSP_Editor` | 1.1.0 | Aqua_Embedded_LSP_Editor (c389402) | `PaintContent(model, painter)` and `PaintPopups(model, painter)` split `Paint`, so a host can draw popups (completion, hover, signature help, the context menu) above other content instead of inside the editor's clipped box; version raised from 1.0.0 |
+| Library | Repository |
+| --- | --- |
+| `Aqua_Embedded_LSP_Editor` | https://github.com/Aquarius-Language/Aqua_Embedded_LSP_Editor |
+| `Aqua_JSON-RPC` | https://github.com/Aquarius-Language/Aqua_JSON-RPC |
 
-To update one, copy the library's tracked files (without `examples/`) over its folder, reapply or upstream the changes
-above, and raise its version when its sources differ from a version already released.
+To update one: change it in its own repository (raising its version), then `git submodule update --remote
+libraries/<name>`, set the version in `frontend/aqua.toml` (and `aqua.toml`), and commit here.
