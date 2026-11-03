@@ -103,10 +103,9 @@ check("one undo for the run", ed.Text(editor), before + " ab cd");
 key(259, 2);
 check("ctrl backspace", ed.Text(editor), before + " ab ");
 var end = ed.Cursor(editor);
-key(263, 4);
-check("alt left is not a word move", ed.Cursor(editor), end);
-ed.HandleEvent(editor, ix.Event({"type": "key", "key": 263, "action": "press", "modifiers": 2, "edit": ix.EditAction(263, 2)}));
+ed.HandleEvent(editor, ix.Event({"type": "key", "key": 263, "action": "press", "modifiers": 2, "edit": ix.EditAction(263, 2), "codeEdit": ix.EditAction(263, 2, true)}));
 check("passed-on event", ed.Cursor(editor)["character"] < end["character"], true);
+
 
 # 指標：按下放游標，雙擊選字，Shift 延伸。 / Pointer: press places the caret, double click selects a word.
 var gutter = ed.RenderModel(editor)["gutterWidth"];
@@ -155,5 +154,61 @@ check("painted", counts["rect"] > 3 && counts["text"] > 10, true);
 var lines = ed.RenderModel(editor)["lines"];
 check("model lines", [長度(lines), lines[0]["number"], lines[0]["runs"][0]["kind"]], [4, 1, "keyword"]);
 await ed.DisconnectLanguageServer(editor);
+
+# 程式碼編輯器的按鍵（Windows／Linux 的組合；Apple 用 Option／Command）：Alt＋左右跳字的部分、Alt＋上下移動行、
+# Shift＋Alt＋下複製行、Ctrl＋/ 註解、Ctrl＋] 縮排、Ctrl＋Shift＋K 刪行、Ctrl＋L 選行、沒有選取時 Ctrl＋X 剪下整行。
+# A code editor's keys (the Windows and Linux combinations; Apple's use Option and Command).
+ed.SetText(editor, nl("parseHTMLDocument_v2 = 1;
+second = 2;
+third = 3;"));
+key(268, 2);
+key(262, 4); check("word part 1", ed.Cursor(editor)["character"], 5);
+key(262, 4); check("word part 2", ed.Cursor(editor)["character"], 9);
+key(262, 4); check("word part 3", ed.Cursor(editor)["character"], 17);
+key(262, 4); check("word part 4", ed.Cursor(editor)["character"], 19);
+key(263, 4); check("word part back", ed.Cursor(editor)["character"], 18);
+key(263, 6); check("ctrl alt left is not bound on desktop", ed.Cursor(editor)["character"], 18);
+key(264, 4); check("alt down moves the line", ed.Text(editor), nl("second = 2;
+parseHTMLDocument_v2 = 1;
+third = 3;"));
+check("caret moved with it", ed.Cursor(editor)["line"], 1);
+key(265, 4); check("alt up moves it back", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+second = 2;
+third = 3;"));
+key(264, 5); check("shift alt down copies the line", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+parseHTMLDocument_v2 = 1;
+second = 2;
+third = 3;"));
+key(75, 3); check("ctrl shift k deletes the line", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+second = 2;
+third = 3;"));
+key(47, 2); check("ctrl slash comments", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+# second = 2;
+third = 3;"));
+key(47, 2); check("and uncomments", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+second = 2;
+third = 3;"));
+key(93, 2); check("ctrl ] indents", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+    second = 2;
+third = 3;"));
+key(91, 2); check("ctrl [ outdents", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+second = 2;
+third = 3;"));
+key(76, 2); check("ctrl l selects the line", ed.SelectedText(editor), nl("second = 2;
+"));
+key(268, 2); key(257, 2); check("ctrl enter opens a line below", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+
+second = 2;
+third = 3;"));
+key(90, 2);
+key(268, 2); key(88, 2); check("ctrl x cuts the line", ed.Text(editor), nl("second = 2;
+third = 3;"));
+key(90, 2); check("one undo restores it", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+second = 2;
+third = 3;"));
+key(260, 0); key(269, 2); key(268, 0); type("X"); check("insert overwrites", ed.Text(editor), nl("parseHTMLDocument_v2 = 1;
+second = 2;
+Xhird = 3;"));
+key(260, 0);
 
 if (len(failures) == 0) { print("EDITOR_OK"); } else { print("EDITOR_FAIL", failures); }

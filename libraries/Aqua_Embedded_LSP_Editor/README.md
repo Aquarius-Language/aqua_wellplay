@@ -40,8 +40,11 @@ ed.Paint(ed.RenderModel(editor), painter);    # painter: {"rect", "text", "line"
 ## Platforms and tests
 
 Every target (Windows, Linux, Android, web): the editor only needs Interaction's events and something that draws. Keys act by
-their `edit` action (Interaction's editing table), so word moves, line ends, word deletes and the keypad follow each
-platform's rules; copy, cut and paste use Interaction's system clipboard (or the `clipboard` option), and runs of typing,
+their `codeEdit` action (Interaction's editing table: VS Code's defaults on each platform), so word and word-part moves
+and deletes, line ends, Alt+Up/Down line moves, Shift+Alt+Up/Down line copies, Ctrl+Shift+K, Ctrl+Enter,
+Ctrl+Shift+Enter, Ctrl+/ comments, Ctrl+] and Ctrl+[, Ctrl+L, Ctrl+Shift+\, Insert (overwrite), the keypad and Apple's
+Emacs keys follow each platform's rules, Ctrl+C and Ctrl+X take the whole line without a selection, and word boundaries
+are the TextEditing module's; copy, cut and paste use Interaction's system clipboard (or the `clipboard` option), and runs of typing,
 Backspace and Delete undo as one step. A host that passes events on as hashes (SaturnUI's `Immediate`) makes them event
 objects again with `Interaction.Event(hash)`.
 `tests/editor.aqua` feeds events through an Interaction session and prints `EDITOR_OK`; `examples/processing` is a

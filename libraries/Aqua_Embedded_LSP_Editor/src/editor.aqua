@@ -11,6 +11,8 @@ var Hash = import("Hash");
 var ScrollView = import("ScrollView");
 var ContextMenu = import("ContextMenu");
 var Interaction = import("Interaction");
+var TextEditing = import("TextEditing");
+var _apple = Interaction.Conventions().primaryModifier == "Cmd";
 var buffers = null;
 var highlight = null;
 var Initialize = function(bufferModule, highlightModule) { buffers = bufferModule; highlight = highlightModule; };
@@ -24,7 +26,7 @@ struct Editor {
     focused; blinkStart; blinkTime; readOnly;
     clipboard; onChange; onCommand; menu; dragging; lastClick;
     pointerX; pointerY; pointerTime; hoverAsked; theme; autoClose;
-    session; textInput; textRect; composition; compositionCursor; areaName; areaKey
+    session; textInput; textRect; composition; compositionCursor; areaName; areaKey; overwrite; kill
 }
 var _editorCount = 0;
 
@@ -77,7 +79,7 @@ var Create = function(options) {
         true, 0.0d, conventions.caretBlinkTime * 1.0d, opt("readOnly", "唯讀", false),
         opt("clipboard", "剪貼簿", null), null, null, null, false, [0.0d, -1, -1, 0],
         -1.0d, -1.0d, 0.0d, false, opt("theme", "主題", theme), opt("autoClose", "自動配對", true),
-        null, false, "", "", 0, "", "");
+        null, false, "", "", 0, "", "", false, "");
     _editorCount++;
     editor.areaName = "editor" + String.From(_editorCount);
     editor.menu = ContextMenu.Create(function(command) { RunCommand(editor, command); });
@@ -242,6 +244,14 @@ var Type = function(editor, text) {
             return true;
         }
     }
+    # Insert 切換的覆寫模式：取代游標後的字元（不跨行）。 / Overwrite mode (Insert toggles it): replace the character
+    # after the caret (never the line break).
+    if (editor.overwrite && !HasSelection(editor) && len(text) == 1) {
+        var here = buffers.Line(editor.buffer, editor.cursor.line);
+        if (editor.cursor.character < len(here)) {
+            editor.anchor = buffers.Pos(editor.cursor.line, TextEditing.Next(here, editor.cursor.character));
+        }
+    }
     Insert(editor, text);
     _afterTyping(editor, text);
     return true;
@@ -344,9 +354,17 @@ var Redo = function(editor) {
 # 「互動」的命令名稱：copy、cut、paste、undo、redo、selectAll、delete、cancel...；其他交給 OnCommand。
 # Interaction command names; the rest go to OnCommand.
 var RunCommand = function(editor, command) {
-    if (command == "copy") { if (HasSelection(editor)) { _clipboardWrite(editor, SelectedText(editor)); } return true; }
+    # 沒有選取時複製／剪下整行（含換行），如 VS Code。 / Without a selection, copy or cut the whole line (with its line
+    # break), as VS Code does.
+    if (command == "copy") {
+        if (HasSelection(editor)) { _clipboardWrite(editor, SelectedText(editor)); }
+        else { _clipboardWrite(editor, buffers.Line(editor.buffer, editor.cursor.line) + _newline); }
+        return true;
+    }
     if (command == "cut") {
-        if (HasSelection(editor) && !editor.readOnly) { _clipboardWrite(editor, SelectedText(editor)); var r = SelectionRange(editor); DeleteRange(editor, r[0], r[1]); }
+        if (editor.readOnly) { return true; }
+        if (HasSelection(editor)) { _clipboardWrite(editor, SelectedText(editor)); var r = SelectionRange(editor); DeleteRange(editor, r[0], r[1]); }
+        else { _clipboardWrite(editor, buffers.Line(editor.buffer, editor.cursor.line) + _newline); DeleteLines(editor); }
         return true;
     }
     if (command == "paste") { var text = _clipboardRead(editor); if (text != "") { Insert(editor, text); } return true; }
@@ -383,50 +401,308 @@ var _moveVertical = function(editor, lines, extend) {
     return true;
 };
 
-# 按鍵的意義來自「互動」的編輯表（e.edit），所以各平台的規則一致：Windows／Linux 用 Ctrl＋方向鍵跳字、Home／End 到行頭行尾，
-# Apple 用 Option／Command；數字鍵盤在 Num Lock 關閉時也是方向鍵。 / What a key means comes from Interaction's editing table
-# (e.edit), so every platform's rules hold: Ctrl+arrows by words and Home/End on Windows and Linux, Option and Command on
-# Apple targets, the keypad's navigation keys with Num Lock off.
+# 按鍵的意義來自「互動」的編輯表：程式碼編輯器讀 e.codeEdit（VS Code 在各平台的預設：Alt＋上下移動行、Ctrl＋/ 註解…），
+# 沒有時讀 e.edit；字與字的部分的邊界用「文字編輯」模組的規則，與其他 UI 的文字欄位一致。 / What a key means comes from
+# Interaction's editing table: a code editor reads e.codeEdit (VS Code's defaults on each platform: Alt+Up/Down moves
+# lines, Ctrl+/ comments, ...), else e.edit; word and word-part boundaries follow the TextEditing module's rules, as every
+# UI library's text fields do.
+
+# 行內依共用規則移動；在行首或行尾時移到相鄰的行。 / A move within the line by the shared rules; at a line's ends, to the
+# neighbouring line.
+var _lineMove = function(editor, direction, step) {
+    var p = editor.cursor;
+    var line = buffers.Line(editor.buffer, p.line);
+    if (direction > 0) {
+        if (p.character >= len(line)) {
+            if (p.line + 1 < LineCount(editor)) { return buffers.Pos(p.line + 1, 0); }
+            return p;
+        }
+        return buffers.Pos(p.line, step(line, p.character));
+    }
+    if (p.character == 0) {
+        if (p.line > 0) { return buffers.Pos(p.line - 1, len(buffers.Line(editor.buffer, p.line - 1))); }
+        return p;
+    }
+    return buffers.Pos(p.line, step(line, p.character));
+};
+var _wordLeft = function(line, at) { return TextEditing.WordLeft(line, at, _apple); };
+var _wordRight = function(line, at) { return TextEditing.WordRight(line, at, _apple); };
+var _partLeft = function(line, at) { return TextEditing.WordPartLeft(line, at); };
+var _partRight = function(line, at) { return TextEditing.WordPartRight(line, at); };
+
+# 選取（或游標）涵蓋的行：[第一行, 最後一行]；選取結束在行首時那一行不算。 / The lines the selection (or the caret)
+# covers: [first, last]; a selection ending at a line's start leaves that line out.
+var _selectedLines = function(editor) {
+    var r = SelectionRange(editor);
+    var last = r[1].line;
+    if (HasSelection(editor) && r[1].character == 0 && last > r[0].line) { last = last - 1; }
+    return [r[0].line, last];
+};
+var _linesText = function(editor, first, last) {
+    var parts = [];
+    for (var l = first; l <= last; l++) { Array.Append(parts, buffers.Line(editor.buffer, l)); }
+    return String.Join(parts, _newline);
+};
+# 取代整行 [first, last] 為 text（一次復原），再放回游標與選取。 / Replaces lines [first, last] with text (one undo step),
+# then puts the caret and the selection back.
+var _replaceLines = function(editor, first, last, text, cursor, anchor) {
+    var change = buffers.Edit(editor.buffer, buffers.Pos(first, 0), buffers.Pos(last, len(buffers.Line(editor.buffer, last))), text);
+    editor.cursor = buffers.Clamp(editor.buffer, cursor);
+    editor.anchor = null;
+    if (anchor != null) { editor.anchor = buffers.Clamp(editor.buffer, anchor); }
+    editor.preferredX = -1.0d;
+    _changed(editor, [change]);
+    return true;
+};
+var _shifted = function(p, lines) { if (p == null) { return null; } return buffers.Pos(p.line + lines, p.character); };
+
+# Alt＋上下：把選到的行與上一行或下一行對調。 / Alt+Up/Down: swap the selected lines with the line above or below.
+var MoveLines = function(editor, direction) {
+    if (editor.readOnly) { return false; }
+    var lines = _selectedLines(editor);
+    var first = lines[0];
+    var last = lines[1];
+    if (direction < 0 && first == 0) { return true; }
+    if (direction > 0 && last + 1 >= LineCount(editor)) { return true; }
+    var block = _linesText(editor, first, last);
+    if (direction < 0) {
+        var above = buffers.Line(editor.buffer, first - 1);
+        return _replaceLines(editor, first - 1, last, block + _newline + above, _shifted(editor.cursor, -1), _shifted(editor.anchor, -1));
+    }
+    var below = buffers.Line(editor.buffer, last + 1);
+    return _replaceLines(editor, first, last + 1, below + _newline + block, _shifted(editor.cursor, 1), _shifted(editor.anchor, 1));
+};
+# Shift＋Alt＋上下：把選到的行複製到上方或下方（游標跟著複本）。 / Shift+Alt+Up/Down: copy the selected lines above or
+# below (the caret goes with the copy below).
+var CopyLines = function(editor, direction) {
+    if (editor.readOnly) { return false; }
+    var lines = _selectedLines(editor);
+    var block = _linesText(editor, lines[0], lines[1]);
+    var count = lines[1] - lines[0] + 1;
+    var moved = if (direction > 0) { count; } else { 0; };
+    return _replaceLines(editor, lines[0], lines[1], block + _newline + block, _shifted(editor.cursor, moved), _shifted(editor.anchor, moved));
+};
+# Ctrl＋Shift＋K：刪除選到的行。 / Ctrl+Shift+K: delete the selected lines.
+var DeleteLines = function(editor) {
+    if (editor.readOnly) { return false; }
+    var lines = _selectedLines(editor);
+    var column = editor.cursor.character;
+    var start = buffers.Pos(lines[0], 0);
+    var end = buffers.Pos(lines[1] + 1, 0);
+    if (lines[1] + 1 >= LineCount(editor)) {
+        end = buffers.Pos(lines[1], len(buffers.Line(editor.buffer, lines[1])));
+        if (lines[0] > 0) { start = buffers.Pos(lines[0] - 1, len(buffers.Line(editor.buffer, lines[0] - 1))); }
+    }
+    DeleteRange(editor, start, end);
+    var line = lines[0];
+    if (line >= LineCount(editor)) { line = LineCount(editor) - 1; }
+    SetCursor(editor, buffers.Clamp(editor.buffer, buffers.Pos(line, column)), false);
+    return true;
+};
+# Ctrl＋Enter／Ctrl＋Shift＋Enter：在下方／上方開新行（保持縮排），不打斷目前這行。 / Ctrl+Enter, Ctrl+Shift+Enter: open a
+# line below or above (keeping the indentation) without breaking the current one.
+var InsertLine = function(editor, above) {
+    if (editor.readOnly) { return false; }
+    var l = editor.cursor.line;
+    var indent = buffers.Indentation(editor.buffer, l);
+    if (above) {
+        SetCursor(editor, buffers.Pos(l, 0), false);
+        Insert(editor, indent + _newline);
+        SetCursor(editor, buffers.Pos(l, len(indent)), false);
+        return true;
+    }
+    SetCursor(editor, buffers.Pos(l, len(buffers.Line(editor.buffer, l))), false);
+    return NewLine(editor);
+};
+# Ctrl＋/：切換行註解（星泉用 #）。 / Ctrl+/: toggle line comments (AquariusLang's #).
+var ToggleComment = function(editor) {
+    if (editor.readOnly) { return false; }
+    var lines = _selectedLines(editor);
+    var commented = true;
+    var indent = -1;
+    for (var l = lines[0]; l <= lines[1]; l++) {
+        var text = buffers.Line(editor.buffer, l);
+        if (String.Trim(text) == "") { continue; }
+        var lead = len(buffers.Indentation(editor.buffer, l));
+        if (indent < 0 || lead < indent) { indent = lead; }
+        if (!String.StartsWith(String.Slice(text, lead, len(text)), "#")) { commented = false; }
+    }
+    if (indent < 0) { return true; }
+    var out = [];
+    var shift = 0;
+    for (var l = lines[0]; l <= lines[1]; l++) {
+        var text = buffers.Line(editor.buffer, l);
+        if (String.Trim(text) == "") { Array.Append(out, text); continue; }
+        if (commented) {
+            var lead = len(buffers.Indentation(editor.buffer, l));
+            var cut = if (String.StartsWith(String.Slice(text, lead, len(text)), "# ")) { 2; } else { 1; };
+            Array.Append(out, String.Slice(text, 0, lead) + String.Slice(text, lead + cut, len(text)));
+            if (l == editor.cursor.line) { shift = -cut; }
+        } else {
+            Array.Append(out, String.Slice(text, 0, indent) + "# " + String.Slice(text, indent, len(text)));
+            if (l == editor.cursor.line) { shift = 2; }
+        }
+    }
+    var cursor = buffers.Pos(editor.cursor.line, editor.cursor.character + shift);
+    if (cursor.character < 0) { cursor = buffers.Pos(cursor.line, 0); }
+    var anchor = null;
+    if (HasSelection(editor)) { anchor = editor.anchor; }
+    return _replaceLines(editor, lines[0], lines[1], String.Join(out, _newline), cursor, anchor);
+};
+# Ctrl＋] 與 Ctrl＋[：整行縮排與取消縮排（不論游標在哪）。 / Ctrl+] and Ctrl+[: indent and outdent whole lines wherever the
+# caret is.
+var IndentLines = function(editor, outdent) {
+    if (editor.readOnly) { return false; }
+    var lines = _selectedLines(editor);
+    var out = [];
+    var shift = 0;
+    for (var l = lines[0]; l <= lines[1]; l++) {
+        var text = buffers.Line(editor.buffer, l);
+        var delta = 0;
+        if (outdent) {
+            var lead = len(buffers.Indentation(editor.buffer, l));
+            delta = -lead;
+            if (lead > len(editor.tabText)) { delta = -len(editor.tabText); }
+            Array.Append(out, String.Slice(text, -delta, len(text)));
+        } else {
+            delta = len(editor.tabText);
+            Array.Append(out, editor.tabText + text);
+        }
+        if (l == editor.cursor.line) { shift = delta; }
+    }
+    var cursor = buffers.Pos(editor.cursor.line, editor.cursor.character + shift);
+    if (cursor.character < 0) { cursor = buffers.Pos(cursor.line, 0); }
+    var anchor = null;
+    if (HasSelection(editor)) { anchor = editor.anchor; }
+    return _replaceLines(editor, lines[0], lines[1], String.Join(out, _newline), cursor, anchor);
+};
+# Ctrl＋L：選取整行（再按一次加選下一行）。 / Ctrl+L: select the whole line (again: the next line too).
+var SelectLines = function(editor) {
+    var lines = _selectedLines(editor);
+    var last = lines[1];
+    if (HasSelection(editor) && editor.cursor.character == 0 && editor.cursor.line == last + 1) { last = last + 1; }
+    var start = buffers.Pos(lines[0], 0);
+    var end = buffers.Pos(last + 1, 0);
+    if (last + 1 >= LineCount(editor)) { end = buffers.Pos(last, len(buffers.Line(editor.buffer, last))); }
+    Select(editor, start, end);
+    return true;
+};
+# Ctrl＋Shift＋\：跳到對應的括號。 / Ctrl+Shift+\: jump to the matching bracket.
+var _opens = "([{";
+var _closes = ")]}";
+var JumpToBracket = function(editor) {
+    var p = editor.cursor;
+    var line = buffers.Line(editor.buffer, p.line);
+    var at = -1;
+    if (p.character < len(line) && String.Find(_opens + _closes, String.Slice(line, p.character, p.character + 1)) >= 0) { at = p.character; }
+    elif (p.character > 0 && String.Find(_opens + _closes, String.Slice(line, p.character - 1, p.character)) >= 0) { at = p.character - 1; }
+    if (at < 0) { return true; }
+    var c = String.Slice(line, at, at + 1);
+    var open = String.Find(_opens, c);
+    var forward = open >= 0;
+    var mate = if (forward) { String.Slice(_closes, open, open + 1); } else { String.Slice(_opens, String.Find(_closes, c), String.Find(_closes, c) + 1); };
+    var depth = 0;
+    var l = p.line;
+    var i = at;
+    for (; l >= 0 && l < LineCount(editor);) {
+        var text = buffers.Line(editor.buffer, l);
+        for (; i >= 0 && i < len(text);) {
+            var ch = String.Slice(text, i, i + 1);
+            if (ch == c) { depth++; }
+            elif (ch == mate) {
+                depth = depth - 1;
+                if (depth == 0) {
+                    var target = if (forward) { i + 1; } else { i; };
+                    SetCursor(editor, buffers.Pos(l, target), false);
+                    return true;
+                }
+            }
+            i = if (forward) { i + 1; } else { i - 1; };
+        }
+        l = if (forward) { l + 1; } else { l - 1; };
+        if (l >= 0 && l < LineCount(editor)) { i = if (forward) { 0; } else { len(buffers.Line(editor.buffer, l)) - 1; }; }
+    }
+    return true;
+};
+# Apple 的 Ctrl＋T：對調游標兩側的字元。 / Apple's Ctrl+T: swap the characters around the caret.
+var Transpose = function(editor) {
+    if (editor.readOnly || HasSelection(editor)) { return true; }
+    var p = editor.cursor;
+    var line = buffers.Line(editor.buffer, p.line);
+    var at = p.character;
+    if (at >= len(line)) { at = len(line) - 1; }
+    if (at <= 0) { return true; }
+    var swapped = String.Slice(line, at, at + 1) + String.Slice(line, at - 1, at);
+    var change = buffers.Edit(editor.buffer, buffers.Pos(p.line, at - 1), buffers.Pos(p.line, at + 1), swapped);
+    editor.cursor = change.newEnd;
+    _changed(editor, [change]);
+    return true;
+};
+
 var HandleKey = function(editor, e) {
     if (e.action == "release") { return false; }
     var key = e.key;
     if (key == KeyPadEnter) { key = KeyEnter; }   # 數字鍵盤的 Enter。 / The keypad's Enter.
     var shift = e.shift == true;
-    var edit = e.edit;
+    var edit = e.codeEdit;
+    if (edit == null) { edit = e.edit; }
     if (editor.completion != null) {
         var items = editor.completion["items"];
         if (key == KeyDown) { editor.completion["selected"] = (editor.completion["selected"] + 1) % len(items); return true; }
         if (key == KeyUp) { editor.completion["selected"] = (editor.completion["selected"] + len(items) - 1) % len(items); return true; }
         if (key == KeyEnter || key == KeyTab) { AcceptCompletion(editor); return true; }
     }
-    if (edit == "left" || edit == "wordLeft") {
+    if (edit == null) {
+        if (key == KeyTab && e.primary != true) { if (editor.readOnly) { return false; } Indent(editor, shift); return true; }
+        if (key == KeySpace && e.primary == true) { RequestCompletion(editor, true); return true; }
+        # 文字來自 "text" 事件（視窗的文字輸入與輸入法），不是按鍵名稱。 / Text comes from "text" events (the window's
+        # text input and input methods), not from key names.
+        return false;
+    }
+    # 移動（Shift 延伸選取）。 / Moves (Shift extends the selection).
+    if (edit == "left" || edit == "right") {
         editor.preferredX = -1.0d;
-        if (HasSelection(editor) && !shift) { SetCursor(editor, SelectionRange(editor)[0], false); return true; }
-        if (edit == "wordLeft") { SetCursor(editor, buffers.WordBoundary(editor.buffer, editor.cursor, -1), shift); return true; }
-        var p = editor.cursor;
-        if (p.character > 0) { SetCursor(editor, buffers.Pos(p.line, p.character - 1), shift); }
-        else if (p.line > 0) { SetCursor(editor, buffers.Pos(p.line - 1, len(buffers.Line(editor.buffer, p.line - 1))), shift); }
         editor.completion = null;
+        if (HasSelection(editor) && !shift) {
+            var range = SelectionRange(editor);
+            if (edit == "left") { SetCursor(editor, range[0], false); } else { SetCursor(editor, range[1], false); }
+            return true;
+        }
+        var p = editor.cursor;
+        var line = buffers.Line(editor.buffer, p.line);
+        if (edit == "left") {
+            if (p.character > 0) { SetCursor(editor, buffers.Pos(p.line, TextEditing.Previous(line, p.character)), shift); }
+            elif (p.line > 0) { SetCursor(editor, buffers.Pos(p.line - 1, len(buffers.Line(editor.buffer, p.line - 1))), shift); }
+        } else {
+            if (p.character < len(line)) { SetCursor(editor, buffers.Pos(p.line, TextEditing.Next(line, p.character)), shift); }
+            elif (p.line + 1 < LineCount(editor)) { SetCursor(editor, buffers.Pos(p.line + 1, 0), shift); }
+        }
         return true;
     }
-    if (edit == "right" || edit == "wordRight") {
-        editor.preferredX = -1.0d;
-        if (HasSelection(editor) && !shift) { SetCursor(editor, SelectionRange(editor)[1], false); return true; }
-        if (edit == "wordRight") { SetCursor(editor, buffers.WordBoundary(editor.buffer, editor.cursor, 1), shift); return true; }
-        var p = editor.cursor;
-        if (p.character < len(buffers.Line(editor.buffer, p.line))) { SetCursor(editor, buffers.Pos(p.line, p.character + 1), shift); }
-        else if (p.line + 1 < LineCount(editor)) { SetCursor(editor, buffers.Pos(p.line + 1, 0), shift); }
-        editor.completion = null;
-        return true;
-    }
+    if (edit == "wordLeft") { editor.preferredX = -1.0d; SetCursor(editor, _lineMove(editor, -1, _wordLeft), shift); return true; }
+    if (edit == "wordRight") { editor.preferredX = -1.0d; SetCursor(editor, _lineMove(editor, 1, _wordRight), shift); return true; }
+    if (edit == "wordPartLeft") { editor.preferredX = -1.0d; SetCursor(editor, _lineMove(editor, -1, _partLeft), shift); return true; }
+    if (edit == "wordPartRight") { editor.preferredX = -1.0d; SetCursor(editor, _lineMove(editor, 1, _partRight), shift); return true; }
     if (edit == "up") { editor.completion = null; return _moveVertical(editor, -1, shift); }
     if (edit == "down") { editor.completion = null; return _moveVertical(editor, 1, shift); }
     var page = int(editor.view.height / editor.lineHeight) - 1;
     if (page < 1) { page = 1; }
     if (edit == "pageUp") { ScrollView.ScrollBy(editor.view, 0, -page * editor.lineHeight); return _moveVertical(editor, -page, shift); }
     if (edit == "pageDown") { ScrollView.ScrollBy(editor.view, 0, page * editor.lineHeight); return _moveVertical(editor, page, shift); }
+    if (edit == "scrollLineUp") { ScrollView.ScrollBy(editor.view, 0, -editor.lineHeight); return true; }
+    if (edit == "scrollLineDown") { ScrollView.ScrollBy(editor.view, 0, editor.lineHeight); return true; }
     if (edit == "documentStart") { editor.preferredX = -1.0d; SetCursor(editor, buffers.Pos(0, 0), shift); return true; }
     if (edit == "documentEnd") { editor.preferredX = -1.0d; SetCursor(editor, buffers.End(editor.buffer), shift); return true; }
+    if (edit == "paragraphStart" || edit == "paragraphEnd") {
+        # 空行之間為一段。 / Paragraphs lie between blank lines.
+        var step = if (edit == "paragraphStart") { -1; } else { 1; };
+        var l = editor.cursor.line + step;
+        for (; l > 0 && l < LineCount(editor) - 1 && String.Trim(buffers.Line(editor.buffer, l)) != "";) { l = l + step; }
+        if (l < 0) { l = 0; }
+        if (l >= LineCount(editor)) { l = LineCount(editor) - 1; }
+        SetCursor(editor, buffers.Pos(l, 0), shift);
+        return true;
+    }
     if (edit == "lineStart") {
         editor.preferredX = -1.0d;
         # 先到第一個非空白字元，再到行首。 / First to the first non-space character, then to the line start.
@@ -441,39 +717,66 @@ var HandleKey = function(editor, e) {
         SetCursor(editor, buffers.Pos(editor.cursor.line, len(buffers.Line(editor.buffer, editor.cursor.line))), shift);
         return true;
     }
+    if (edit == "selectAll") { SelectAll(editor); return true; }
+    if (edit == "selectLine") { return SelectLines(editor); }
+    if (edit == "jumpToBracket") { return JumpToBracket(editor); }
+    # 剪貼簿與復原（Interaction 也送同名命令，見 HandleEvent）。 / Clipboard and history (Interaction also sends commands of
+    # the same names; see HandleEvent).
+    if (edit == "copy" || edit == "cut" || edit == "paste" || edit == "undo" || edit == "redo") { return RunCommand(editor, edit); }
+    if (edit == "toggleOverwrite") { editor.overwrite = !editor.overwrite; return true; }
     if (editor.readOnly) { return false; }
     var lineStart = buffers.Pos(editor.cursor.line, 0);
     var lineEnd = buffers.Pos(editor.cursor.line, len(buffers.Line(editor.buffer, editor.cursor.line)));
     if (edit == "deleteBackward") { Backspace(editor); _refreshCompletion(editor); return true; }
     if (edit == "deleteForward") { DeleteForward(editor); return true; }
-    if (edit == "deleteWordBackward" || edit == "deleteToLineStart") {
-        if (HasSelection(editor)) { Backspace(editor); }
-        elif (edit == "deleteWordBackward") { DeleteRange(editor, buffers.WordBoundary(editor.buffer, editor.cursor, -1), editor.cursor); }
-        else { DeleteRange(editor, lineStart, editor.cursor); }
-        _refreshCompletion(editor);
+    if (HasSelection(editor) && (edit == "deleteWordBackward" || edit == "deleteWordPartBackward" || edit == "deleteToLineStart")) { Backspace(editor); _refreshCompletion(editor); return true; }
+    if (HasSelection(editor) && (edit == "deleteWordForward" || edit == "deleteWordPartForward" || edit == "deleteToLineEnd")) { DeleteForward(editor); return true; }
+    if (edit == "deleteWordBackward") { DeleteRange(editor, _lineMove(editor, -1, _wordLeft), editor.cursor); _refreshCompletion(editor); return true; }
+    if (edit == "deleteWordForward") { DeleteRange(editor, editor.cursor, _lineMove(editor, 1, _wordRight)); return true; }
+    if (edit == "deleteWordPartBackward") { DeleteRange(editor, _lineMove(editor, -1, _partLeft), editor.cursor); _refreshCompletion(editor); return true; }
+    if (edit == "deleteWordPartForward") { DeleteRange(editor, editor.cursor, _lineMove(editor, 1, _partRight)); return true; }
+    if (edit == "deleteToLineStart") { DeleteRange(editor, lineStart, editor.cursor); return true; }
+    if (edit == "deleteToLineEnd") {
+        # Ctrl＋K 剪下的文字進入編輯器的刪除緩衝區，Ctrl＋Y 貼回（Apple）。 / What Ctrl+K cuts goes to the editor's kill
+        # buffer, which Ctrl+Y yanks back (Apple).
+        var end = lineEnd;
+        if (buffers.Compare(editor.cursor, lineEnd) == 0 && editor.cursor.line + 1 < LineCount(editor)) { end = buffers.Pos(editor.cursor.line + 1, 0); }
+        editor.kill = buffers.Slice(editor.buffer, editor.cursor, end);
+        DeleteRange(editor, editor.cursor, end);
         return true;
     }
-    if (edit == "deleteWordForward" || edit == "deleteToLineEnd") {
-        if (HasSelection(editor)) { DeleteForward(editor); }
-        elif (edit == "deleteWordForward") { DeleteRange(editor, editor.cursor, buffers.WordBoundary(editor.buffer, editor.cursor, 1)); }
-        else { DeleteRange(editor, editor.cursor, lineEnd); }
-        return true;
-    }
+    if (edit == "yank") { if (editor.kill != "") { Insert(editor, editor.kill); } return true; }
+    if (edit == "transpose") { return Transpose(editor); }
+    if (edit == "openLine") { var stay = editor.cursor; Insert(editor, _newline); SetCursor(editor, stay, false); return true; }
     if (edit == "newline") { NewLine(editor); return true; }
+    if (edit == "insertLineBelow") { return InsertLine(editor, false); }
+    if (edit == "insertLineAbove") { return InsertLine(editor, true); }
+    if (edit == "moveLineUp") { return MoveLines(editor, -1); }
+    if (edit == "moveLineDown") { return MoveLines(editor, 1); }
+    if (edit == "copyLineUp") { return CopyLines(editor, -1); }
+    if (edit == "copyLineDown") { return CopyLines(editor, 1); }
+    if (edit == "deleteLine") { return DeleteLines(editor); }
+    if (edit == "toggleComment") { return ToggleComment(editor); }
+    if (edit == "indent") { return IndentLines(editor, false); }
+    if (edit == "outdent") { return IndentLines(editor, true); }
     if (key == KeyTab && e.primary != true) { Indent(editor, shift); return true; }
     if (key == KeySpace && e.primary == true) { RequestCompletion(editor, true); return true; }
-    # 文字來自 "text" 事件（視窗的文字輸入與輸入法），不是按鍵名稱。 / Text comes from "text" events (the window's text
-    # input and input methods), not from key names.
     return false;
 };
 
 # ---- 指標 / Pointer ----
 # 「互動」事件：點擊（次數）、拖曳、捲動、右鍵選單、鍵盤命令。回傳 真 表示已處理。
 # An Interaction event: clicks with counts, drags, scrolling, context menus, keyboard commands; true when handled.
+var _keyedCommands = ["copy", "cut", "paste", "undo", "redo", "selectAll", "delete"];
 var HandleEvent = function(editor, e) {
     if (ContextMenu.Handle(editor.menu, e)) { return true; }
     var t = e.type;
-    if (t == "command") { return RunCommand(editor, e.command); }
+    if (t == "command") {
+        # 鍵盤送來的編輯命令已由按鍵的編輯動作做過（同一個按鍵也送 "key" 事件）。 / Editing commands from the keyboard
+        # were already done by the key's editing action (the same key also sends a "key" event).
+        if (e.source == "keyboard" && editor.focused && Array.Contains(_keyedCommands, e.command)) { return true; }
+        return RunCommand(editor, e.command);
+    }
     if (t == "key") {
         if (!editor.focused) { return false; }
         # 組字中的按鍵屬於輸入法。 / Keys while composing belong to the input method.
