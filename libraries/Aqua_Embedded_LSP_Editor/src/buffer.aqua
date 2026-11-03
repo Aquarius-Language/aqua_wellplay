@@ -84,16 +84,29 @@ var Edit = function(buffer, start, end, text) {
     var last = null;
     if (len(buffer.undo) > 0) { last = buffer.undo[len(buffer.undo) - 1]; }
     var typing = len(text) == 1 && oldText == "" && text != _newline && text != " ";
+    # 連續的 Backspace／Delete（各刪一個字）也合併成一次復原，如原生的文字欄位。 / Runs of Backspace or Delete (one
+    # character each) merge into one undo step too, as in native text fields.
+    var deleting = text == "" && len(oldText) > 0 && len(oldText) <= 2 && String.Find(oldText, _newline) < 0;
+    var lastDeleted = last != null && len(last) == 1 && last[0].text == "" && len(last[0].oldText) > 0
+        && String.Find(last[0].oldText, _newline) < 0 && now - buffer.groupTime < 1000.0d;
     if (typing && last != null && now - buffer.groupTime < 1000.0d && len(last) == 1 && last[0].oldText == ""
         && Compare(last[0].newEnd, start) == 0 && String.Find(last[0].text, _newline) < 0) {
         # 接在上一次輸入之後：合併。 / Right after the previous typing: merge.
         last[0] = Change(last[0].start, last[0].end, last[0].text + text, "", change.newEnd);
+    } elif (deleting && lastDeleted && Compare(end, last[0].start) == 0) {
+        # Backspace 接著前一次 Backspace。 / Backspace after Backspace.
+        var merged = oldText + last[0].oldText;
+        last[0] = Change(start, _endAfter(start, merged), "", merged, start);
+    } elif (deleting && lastDeleted && Compare(start, last[0].start) == 0) {
+        # Delete 接著前一次 Delete。 / Delete after Delete.
+        var forward = last[0].oldText + oldText;
+        last[0] = Change(start, _endAfter(start, forward), "", forward, start);
     } else {
         Array.Append(buffer.undo, [change]);
         if (len(buffer.undo) > 500) { Array.Delete(buffer.undo, 0, 1); }
     }
     buffer.groupTime = now;
-    if (!typing) { buffer.groupTime = -1.0d; }
+    if (!typing && !deleting) { buffer.groupTime = -1.0d; }
     buffer.redo = [];
     return change;
 };

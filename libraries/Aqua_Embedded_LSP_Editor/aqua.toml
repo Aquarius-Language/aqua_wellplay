@@ -1,7 +1,7 @@
 manifest_version = 2
 [library]
 name = "Aqua_Embedded_LSP_Editor"
-version = "1.1.1"
+version = "1.1.2"
 description = "星泉內嵌程式碼編輯器：與繪圖無關、支援 LSP（Aqua_JSON-RPC）、原生般的輸入（互動函式庫）。An embeddable, graphics-independent code editor with LSP support and native-like input."
 platforms = ["windows", "linux", "web", "android"]
 license = "MIT"

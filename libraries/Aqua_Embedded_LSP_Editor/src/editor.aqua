@@ -311,15 +311,17 @@ var Indent = function(editor, outdent) {
 };
 
 # ---- 命令 / Commands ----
+# 系統剪貼簿用「互動」的同步文字剪貼簿，與其他 UI 的文字欄位相同。 / The system clipboard through Interaction's immediate
+# text clipboard, as every UI library's text fields use it.
 var _clipboardWrite = function(editor, text) {
     if (editor.clipboard != null) { _member(editor.clipboard, "set")(text); return true; }
-    return import("Network").Try(function() { return import("Clipboard").WriteText(text); }).Success;
+    return Interaction.SetClipboardText(text);
 };
 var _clipboardRead = function(editor) {
     if (editor.clipboard != null) { return _member(editor.clipboard, "get")(); }
-    var result = import("Network").Try(function() { return import("Clipboard").ReadText(); });
-    if (result.Success && typeOf(result.Value) == "string") { return result.Value; }
-    return "";
+    var text = Interaction.ClipboardText();
+    if (text == null) { return ""; }
+    return text;
 };
 
 var Undo = function(editor) {

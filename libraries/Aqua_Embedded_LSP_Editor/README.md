@@ -41,7 +41,9 @@ ed.Paint(ed.RenderModel(editor), painter);    # painter: {"rect", "text", "line"
 
 Every target (Windows, Linux, Android, web): the editor only needs Interaction's events and something that draws. Keys act by
 their `edit` action (Interaction's editing table), so word moves, line ends, word deletes and the keypad follow each
-platform's rules.
+platform's rules; copy, cut and paste use Interaction's system clipboard (or the `clipboard` option), and runs of typing,
+Backspace and Delete undo as one step. A host that passes events on as hashes (SaturnUI's `Immediate`) makes them event
+objects again with `Interaction.Event(hash)`.
 `tests/editor.aqua` feeds events through an Interaction session and prints `EDITOR_OK`; `examples/processing` is a
 Processing host (desktop, web, Android); [AquaLab](../AquariusLangTW_AquaLab) embeds it in a full-stack web app.
 Needs an AquariusLang runtime with async functions and Interaction's `text` events and cursor areas (AquariusLang 0.1.7 or later).

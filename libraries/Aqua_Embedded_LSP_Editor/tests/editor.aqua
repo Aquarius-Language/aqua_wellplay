@@ -89,6 +89,25 @@ key(259, 0);
 await settle();
 check("diagnostic cleared", ed.Diagnostics(editor), []);
 
+# 按鍵依「互動」編輯表的動作：Ctrl＋Backspace 刪字、連續 Backspace 一次復原、Windows 上 Alt＋左是「上一頁」不是跳字，
+# 以雜湊表傳來的事件轉回事件物件也照樣運作。 / Keys by Interaction's editing actions: Ctrl+Backspace deletes a word, a
+# run of Backspaces undoes at once, Alt+Left is "back" on Windows (not a word move), and events passed on as hashes and
+# made events again work the same.
+var before = ed.Text(editor);
+key(269, 2);
+type(" ab cd");
+key(259, 0); key(259, 0);
+check("backspaces", ed.Text(editor), before + " ab ");
+key(90, 2);
+check("one undo for the run", ed.Text(editor), before + " ab cd");
+key(259, 2);
+check("ctrl backspace", ed.Text(editor), before + " ab ");
+var end = ed.Cursor(editor);
+key(263, 4);
+check("alt left is not a word move", ed.Cursor(editor), end);
+ed.HandleEvent(editor, ix.Event({"type": "key", "key": 263, "action": "press", "modifiers": 2, "edit": ix.EditAction(263, 2)}));
+check("passed-on event", ed.Cursor(editor)["character"] < end["character"], true);
+
 # 指標：按下放游標，雙擊選字，Shift 延伸。 / Pointer: press places the caret, double click selects a word.
 var gutter = ed.RenderModel(editor)["gutterWidth"];
 var at = function(line, character) { return [gutter + 6 + character * 8 + 2, line * 20 + 10]; };

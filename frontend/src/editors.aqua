@@ -9,19 +9,11 @@ var UI = import("SaturnUI");
 var Saturn = import("Saturn");
 var ed = import("AquaEditor");
 
-# 編輯器讀取事件的欄位（它用 . 存取，所以雜湊表轉成結構）。 / The event fields the editor reads (with dots, so hashes
-# become structs).
-struct EditorEvent {
-    type; time; x; y; startX; startY; dx; dy; velocityX; velocityY; button; count; pointerId; pointerType; modifiers;
-    shift; alt; primary; key; text; action; command; source; phase; state; cursor
-}
-var eventOf = function(h) {
-    return EditorEvent(type: h["type"], time: h["time"], x: h["x"], y: h["y"], startX: h["startX"], startY: h["startY"],
-        dx: h["dx"], dy: h["dy"], velocityX: h["velocityX"], velocityY: h["velocityY"], button: h["button"], count: h["count"],
-        pointerId: h["pointerId"], pointerType: h["pointerType"], modifiers: h["modifiers"], shift: h["shift"], alt: h["alt"],
-        primary: h["primary"], key: h["key"], text: h["text"], action: h["action"], command: h["command"], source: h["source"],
-        phase: h["phase"], state: h["state"], cursor: h["cursor"]);
-};
+# 編輯器用 . 讀取「互動」事件的欄位；SaturnUI 交給內嵌元件的是雜湊表，轉回事件物件即可（欄位由「互動」決定，不另列）。
+# The editor reads Interaction events with dots; SaturnUI hands embedded widgets hashes, which become event objects again
+# (Interaction decides the fields; nothing here lists them).
+var ix = import("Interaction");
+var eventOf = h => ix.Event(h);
 
 struct CellEditor { id; editor; painter; width; focused; onChange; lastText; popup }
 
