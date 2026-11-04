@@ -451,8 +451,9 @@ var Dialog = function(app, t) {
             "- `Display.Markdown(text)`, `Display.Table(rows)`, `Display.JSON(value)`, `Display.Text(text)`",
             "- `Display.LineChart / BarChart / AreaChart / ScatterChart(series, title:, labels:, height:)`",
             "- `Display.Image(path | image | bytes, width)`, `Display.Progress(value, maximum, label)`",
-            "- `Display.Sketch((p, frame) => ..., width, height, frames:, live:)` draws with Processing, inline.",
-            "- `Display.UI(widget, width, height, dark:)` shows a SaturnUI snapshot.",
+            "- `Display.Sketch((p, frame) => ..., width, height, frames:, live:)` draws with Processing, inline; `frames: 0` runs it until its window is closed.",
+            "- `Display.UI(widget, width, height, dark:, frames:)` shows a SaturnUI snapshot; `frames: 0` keeps it running and usable.",
+            "- Every window a cell opens (`p.run`, SaturnUI, ImGui, WGPU, ...) shows live in its output and takes the mouse and keyboard.",
             "- `Display.Clear(wait)` clears the cell's outputs. A cell's last expression shows as `Out[n]`.",
         ], String.FromCode(10)), t));
     } elif (kind == "about") {

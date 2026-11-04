@@ -1,0 +1,152 @@
+##
+即時視窗：每個儲存格程式執行時 AQUARIUS_REMOTE_WINDOW 指向這裡，所以它開的視窗（Processing、SaturnUI、ImGui、WGPU、
+OpenGL⋯）顯示在筆記本裡，而不是伺服器的螢幕上，筆記本裡的輸入也送回給它。一個 TCP 監聽器接受程式的連線；每個前端保持
+一條 WebSocket（/windows），位元組原樣往返；RemoteWindow.Relay 只轉送完整的訊息，並回報視窗的開啟與關閉，由核心變成執行中
+儲存格的輸出。
+Live windows: every cell program runs with AQUARIUS_REMOTE_WINDOW pointing here, so the windows it opens (Processing,
+SaturnUI, ImGui, WGPU, OpenGL ...) show in the notebook instead of on the server's screen, and the notebook's input goes
+back to them. One TCP listener takes the programs' connections; each frontend keeps one WebSocket (/windows) on which
+the bytes travel unchanged. RemoteWindow.Relay forwards whole messages only and reports windows opening and closing,
+which the kernel turns into outputs of the running cell.
+
+WebSocket messages: binary (both ways) = a program's stream number (4 bytes, little-endian) then remote window
+protocol bytes (aqua/remote_window.h); text from the server = {"event": "start" | "end", "stream": number}. A frontend
+that connects while programs run gets each one's start and Relay.Snapshot first, so it shows windows opened before it
+came. A frontend too slow to take the messages is disconnected; it connects again and starts over the same way.
+##
+var Network = import("Network");
+var RW = import("RemoteWindow");
+
+struct Link { number; relay; stream; token; open }
+struct LiveWindows { Address; Attach; Shutdown }
+
+var prefixed = function(number, bytes) {
+    var message = [number & 255, (number >> 8) & 255, (number >> 16) & 255, (number >> 24) & 255];
+    Array.AppendArray(message, bytes);
+    return message;
+};
+var event = (name, number) => "{\"event\": \"" + name + "\", \"stream\": " + String.From(number) + "}";
+# 讀取逾時只表示程式這段時間沒有畫新的畫面。 / A read timeout only means the program drew nothing new for a while.
+var idle = reason => String.Contains(String.From(reason), ": Timeout:");
+
+# options：opened(token, stream, 開啟紀錄) 回傳視窗是否顯示（重播中的儲存格開的視窗不顯示，伺服器請它關閉）、
+# closed(token, stream, 關閉紀錄)、accepts(token)、log(text)。 / options: opened(token, stream, open record) returns
+# whether the window is shown (a window a replayed cell opens is not, and the server asks it to close), closed(token,
+# stream, close record), accepts(token), log(text).
+var Create = function(options) {
+    var listener = Network.ListenTCP("127.0.0.1", 0, {"Timeout": 300000});
+    var links = [];
+    var sockets = [];
+    # 從亂數開始編號，所以存檔的筆記本裡留下的編號不會指到伺服器重新啟動後的另一個程式。 / Numbers start at random, so a
+    # number left in a saved notebook does not point at another program after the server restarts.
+    var random = Network.RandomBytes(3);
+    var count = random[0] | (random[1] << 8) | (random[2] << 16);
+    var running = true;
+
+    var drop = function(socket) {
+        sockets = Array.Filter(sockets, s => s != socket);
+        Network.Try(() => socket.Close());
+        return null;
+    };
+    var sendTo = function(socket, message) {
+        var sent = Network.Try(function() {
+            if (typeOf(message) == "string") { socket.SendText(message); } else { socket.SendBytes(message); }
+            return null;
+        });
+        if (!sent.Success) { drop(socket); }
+        return sent.Success;
+    };
+    var broadcast = function(message) {
+        var now = Array.Slice(sockets, 0, len(sockets));
+        for (var i = 0; i < len(now); i++) { sendTo(now[i], message); }
+        return null;
+    };
+
+    # 一個程式的連線：轉送它的訊息，直到它結束。 / One program's connection: forward its messages until it ends.
+    var serve = async function(stream) {
+        count += 1;
+        var link = Link(number: count, relay: RW.Relay(), stream: stream, token: null, open: []);
+        Array.Append(links, link);
+        broadcast(event("start", link.number));
+        for (; running;) {
+            var reading = await stream.ReadAsync(1 << 20).Then(bytes => ({"bytes": bytes}), reason => ({"error": reason}));
+            if (reading["error"] != null) { if (idle(reading["error"])) { continue; } break; }
+            var bytes = reading["bytes"];
+            if (len(bytes) == 0) { break; }
+            var parsed = Network.Try(() => link.relay.FromApplication(bytes));
+            if (!parsed.Success) { options["log"]("window stream " + String.From(link.number) + ": " + parsed.Error.Message); break; }
+            var messages = parsed.Value["messages"];
+            var refused = false;
+            var closing = [];
+            for (var i = 0; i < len(messages); i++) {
+                var m = messages[i];
+                if (m["type"] == "hello") {
+                    # 只接受這個伺服器啟動的程式。 / Only programs this server started.
+                    link.token = m["token"];
+                    if (!options["accepts"](link.token)) { refused = true; break; }
+                } elif (m["type"] == "open") {
+                    if (options["opened"](link.token, link.number, m)) { Array.Append(link.open, m["window"]); }
+                    else { Array.AppendArray(closing, link.relay.Close(m["window"])); }
+                } elif (m["type"] == "close" && Array.Contains(link.open, m["window"])) {
+                    link.open = Array.Filter(link.open, w => w != m["window"]);
+                    options["closed"](link.token, link.number, m);
+                }
+            }
+            if (refused) { options["log"]("window stream " + String.From(link.number) + ": an unknown program"); break; }
+            if (len(parsed.Value["forward"]) > 0) { broadcast(prefixed(link.number, parsed.Value["forward"])); }
+            if (len(closing) > 0) { await stream.WriteAsync(closing).Catch(reason => null); }
+        }
+        # 程式結束（或被中斷）：還開著的視窗都算關閉。 / The program ended (or was interrupted): windows still open
+        # count as closed.
+        for (var i = 0; i < len(link.open); i++) { options["closed"](link.token, link.number, {"type": "close", "window": link.open[i]}); }
+        Network.Try(() => stream.Close());
+        links = Array.Filter(links, l => l != link);
+        broadcast(event("end", link.number));
+        return null;
+    };
+    var accept = async function() {
+        for (; running;) {
+            var waiting = await listener.AcceptAsync(300000).Then(stream => ({"stream": stream}), reason => ({"error": reason}));
+            if (waiting["error"] != null) {
+                if (running) { options["log"]("live windows: " + String.From(waiting["error"])); }
+                break;
+            }
+            if (waiting["stream"] != null) { serve(waiting["stream"]).Catch(reason => options["log"]("live windows: " + String.From(reason))); }
+        }
+        return null;
+    };
+    accept().Catch(reason => options["log"]("live windows: " + String.From(reason)));
+
+    # 一個前端的 WebSocket：先送進行中的程式的狀態，再把它的輸入轉給程式。 / A frontend's WebSocket: the state of the
+    # programs running now first, then its input goes to them.
+    var attach = async function(socket) {
+        Array.Append(sockets, socket);
+        for (var i = 0; i < len(links); i++) {
+            var link = links[i];
+            sendTo(socket, event("start", link.number));
+            var snapshot = link.relay.Snapshot();
+            if (len(snapshot) > 0) { sendTo(socket, prefixed(link.number, snapshot)); }
+        }
+        for (; running && Array.Contains(sockets, socket);) {
+            var message = await socket.ReceiveAsync().Catch(reason => null);
+            if (message == null || message.Closed) { break; }
+            if (message.IsText || len(message.Data) < 4) { continue; }
+            var data = message.Data;
+            var number = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+            var link = null;
+            for (var i = 0; i < len(links); i++) { if (links[i].number == number) { link = links[i]; } }
+            if (link == null) { continue; }   # 已經結束的程式 / a program that already ended
+            var bytes = Network.Try(() => link.relay.FromViewer(Array.Slice(data, 4, len(data))));
+            if (!bytes.Success) { break; }
+            if (len(bytes.Value) > 0) { await link.stream.WriteAsync(bytes.Value).Catch(reason => null); }
+        }
+        drop(socket);
+        return null;
+    };
+    var shutdown = function() {
+        running = false;
+        Network.Try(() => listener.Close());
+        return null;
+    };
+    return LiveWindows(Address: listener.LocalAddress, Attach: attach, Shutdown: shutdown);
+};

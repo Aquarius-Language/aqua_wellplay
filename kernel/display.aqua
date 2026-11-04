@@ -158,10 +158,13 @@ var __wellplayKernel = function(token) {
     var Clear = function(wait = false) { return emit({"t": "clear", "wait": wait}); };
 
     # ---- 圖形 / Graphics ----
-    # Sketch(draw(p, frame), width, height, frames, live)：在這台電腦上執行一個 Processing 素描 frames 個影格，把最後一格
-    # 顯示在儲存格中（像 matplotlib 的 inline）；live > 0 時每 live 格更新一次，成為動畫。 / Run a Processing sketch on
-    # this computer for `frames` frames and show the last one in the cell (like matplotlib inline); with live > 0 the
-    # output updates every `live` frames, an animation.
+    # 程式開的每個視窗（這裡的素描，或儲存格自己的 p.run、SaturnUI、ImGui⋯）都即時顯示在儲存格中，也接受輸入。
+    # Every window the program opens (these sketches, or a cell's own p.run, SaturnUI, ImGui ...) shows live in the cell
+    # and takes input there.
+    # Sketch(draw(p, frame), width, height, frames, live)：執行一個 Processing 素描 frames 個影格，把最後一格留在儲存格中
+    # （像 matplotlib 的 inline）；live > 0 時每 live 格更新一次圖片；frames <= 0 時素描一直執行，直到它的視窗被關閉。
+    # / Run a Processing sketch for `frames` frames and keep the last one in the cell (like matplotlib inline); with
+    # live > 0 the picture updates every `live` frames; with frames <= 0 the sketch runs until its window is closed.
     var sketches = 0;
     var Sketch = function(draw, width = 480, height = 320, frames = 1, live = 0, title = "WellPlay") {
         var p = import("Processing");
@@ -174,33 +177,43 @@ var __wellplayKernel = function(token) {
         p.run(function() { p.size(width, height, p.P2D, title); return null; }, function() {
             draw(p, frame);
             frame++;
-            if (live > 0 && frame % live == 0 && frame < frames) {
+            if (frames > 0 && live > 0 && frame % live == 0 && frame < frames) {
                 p.save(file);
                 if (shown) { Update(id, Image(file)); } else { Show(Image(file), id); shown = true; }
             }
-            if (frame >= frames) { p.save(file); p.exit(); }
+            if (frames > 0 && frame >= frames) { p.save(file); p.exit(); }
             return null;
         });
+        if (frames <= 0) { return null; }
         var picture = Image(file);
         Files.Delete(Files.Resolve(file));
         if (shown) { Update(id, picture); return null; }
         return picture;
     };
-    # UI(widget, width, height, dark)：SaturnUI 小工具樹的快照。 / A snapshot of a SaturnUI widget tree.
-    var UI = function(widget, width = 480, height = 320, dark = false) {
+    # UI(widget, width, height, dark, frames)：SaturnUI 小工具樹的快照；frames <= 0 時它一直執行到視窗被關閉，可以操作。
+    # / A snapshot of a SaturnUI widget tree; with frames <= 0 it runs, and takes input, until its window is closed.
+    var UI = function(widget, width = 480, height = 320, dark = false, frames = 2) {
         var Saturn = import("Saturn");
         var SaturnUI = import("SaturnUI");
         var surface = null;
+        var input = null;
+        var follow = null;
         return Sketch(function(p, frame) {
             if (surface == null) {
                 Saturn.SetTextMeasurer(p.uiTextMetrics);
                 surface = SaturnUI.Surface(width, height, widget, {"theme": SaturnUI.Theme(mode: if (dark) { "dark"; } else { "light"; })});
+                if (frames <= 0) {
+                    input = import("Interaction").Attach(p.platformWindow);
+                    input.On("*", event => surface.Feed(event));
+                    follow = SaturnUI.TextInputFollower(input);
+                }
             }
             surface.Frame(p.millis());
             p.background(0);
             p.drawUI(surface.Paint());
+            if (input != null) { input.SetCursor(surface.Cursor()); follow(surface.ImeRect()); }
             return null;
-        }, width, height, 2);
+        }, width, height, frames);
     };
 
     var display = WellPlayDisplay(Show: Show, Update: Update, Clear: Clear, Text: Text, Markdown: Markdown, JSON: JSON,

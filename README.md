@@ -66,11 +66,14 @@ Display.Image("plot.png", 320);                                       # a file n
 | `LineChart` / `折線圖`, `BarChart` / `長條圖`, `AreaChart` / `區域圖`, `ScatterChart` / `散佈圖` `(series, title:, labels:, height:)`, `Chart(spec)` / `圖表` | series: numbers, `{"name": numbers}`, or `[{"name", "values" \| "points": [[x, y]]}]` |
 | `Image(path \| image \| bytes, width?)` / `圖片` | PNG, JPEG or GIF files, Images module images, encoded bytes |
 | `Progress(value, maximum?, label?)` / `進度` | a progress bar (with an id, update it as work advances) |
-| `Sketch(draw(p, frame), width, height, frames:, live:)` / `素描` | runs a Processing sketch on this computer for `frames` frames and shows the last one inline; `live: n` updates the output every n frames (an inline animation) |
-| `UI(widget, width, height, dark:)` / `介面` | a snapshot of a SaturnUI widget tree (any `drawUI` list works through `Sketch`: ImGui, Clay) |
+| `Sketch(draw(p, frame), width, height, frames:, live:)` / `素描` | runs a Processing sketch for `frames` frames and keeps the last one inline; `live: n` also updates that picture every n frames; `frames: 0` runs until the window is closed |
+| `UI(widget, width, height, dark:, frames:)` / `介面` | a snapshot of a SaturnUI widget tree (any `drawUI` list works through `Sketch`: ImGui, Clay); `frames: 0` keeps it running and usable |
 
-Interactive programs (`p.run(...)`, `UI.RunApp(...)`) open a real window on the computer running the server; the
-cell runs until the window closes or you press Stop.
+**Live windows.** Every window a cell opens (`p.run(...)`, `UI.RunApp(...)`, ImGui, Clay, WGPU, OpenGL, the sketches
+above) shows live in the cell's output instead of on the server's screen, and takes the mouse, wheel, touch, keyboard,
+input method and clipboard there like a desktop window; its title row has a close button. The cell runs until the
+window closes or you press Stop. When later runs replay that cell, its window is closed at once, so a replay never
+waits for it.
 
 ## How it works
 
@@ -98,10 +101,21 @@ cell runs until the window closes or you press Stop.
   cell's text; `ERROR: …` is a runtime error; compile errors (`file:line:column: message` on standard error) map back
   to the cell, line and column. Outputs reach the frontend as nbformat output objects (`stream`, `display_data`,
   `execute_result`, `error`), so the same MIME bundles are what the `.ipynb` stores.
-- **The frontend** renders each bundle in this order: progress, chart, table, image, Markdown, JSON, plain text
+- **The frontend** renders each bundle in this order: live window, progress, chart, table, image, Markdown, JSON, plain text
   (`frontend/src/outputs.aqua`; a new MIME type is one more entry in `renderers`).
-- **Security**: the server listens on 127.0.0.1 by default; `/rpc` requires the token printed in the URL and a request
-  from the server's own origin, so other pages cannot run code on the machine.
+- **Live windows** (`server/windows.aqua`, `frontend/src/windows.aqua`). Cell programs run with
+  `AQUARIUS_REMOTE_WINDOW` pointing at a loopback TCP listener of the server and a per-run token, so the runtime
+  streams every window they open with AquariusLang's remote window protocol (changed tiles, lossless, at most two
+  frames waiting for the viewer) and takes input back: nothing in the program changes, whatever library draws it. The
+  server's `RemoteWindow.Relay` passes whole messages between that connection and the frontends' `/windows`
+  WebSockets without decoding frames, and reports windows opening and closing, which the kernel turns into a
+  `display_data` of the running cell (`application/vnd.aquarius.window+json`: stream, window, title, size; its plain
+  text is `<window: title>`) and, on close, an update that leaves nothing. The frontend gives each program's stream a
+  `RemoteWindow.Viewer`, whose draw lists a SaturnUI `Immediate` widget paints and to which it hands the widget's
+  events. A frontend connecting late gets the open windows first and sees them from the next frame.
+- **Security**: the server listens on 127.0.0.1 by default; `/rpc` and `/windows` require the token printed in the URL
+  and a request from the server's own origin, so other pages cannot run code on the machine or drive its windows; the
+  window listener is on loopback and takes only programs that present a running execution's token.
 
 ### Protocol
 
@@ -117,16 +131,21 @@ Notifications: `kernel/status`, `kernel/queued`, `kernel/started {cell, count}`,
 `kernel/update {display, output}`, `kernel/clear {cell, wait}`, `kernel/finished {cell, status: ok | error | aborted,
 milliseconds}`, `kernel/restarted`.
 
+`GET /windows` (WebSocket, subprotocol `aqua-remote-window`): binary messages both ways are a program's stream number
+(4 bytes, little-endian) followed by remote window protocol bytes (`runtime/sdk/include/aqua/remote_window.h` in
+AquariusLang); text messages from the server are `{"event": "start" | "end", "stream": n}`.
+
 ## Layout
 
 ```text
 aqua.toml                   the server project (aqua_wellplay; desktop)
 server/                     main.aqua (command line, HTTP, security), workspace.aqua (files), notebooks.aqua (.ipynb),
-                            kernel.aqua (executions), protocol.aqua (JSON-RPC methods)
+                            kernel.aqua (executions), protocol.aqua (JSON-RPC methods), windows.aqua (live windows)
 kernel/display.aqua         the display module compiled in front of every cell program
 frontend/                   the web app: main.aqua (window, input, shortcuts), src/app.aqua (state, connection,
                             actions), src/views.aqua (screens), src/editors.aqua (cell editors), src/outputs.aqua
-                            (renderers, Markdown, charts), src/theme.aqua (palettes, style sheet)
+                            (renderers, Markdown, charts), src/windows.aqua (live windows), src/theme.aqua (palettes,
+                            style sheet)
 libraries/                  Aqua_Embedded_LSP_Editor and Aqua_JSON-RPC, submodules (see libraries/README.md)
 examples/<NN Group>/        the example gallery (examples/README.md: how to add one)
 tests/                      run.ps1 + client/: the end-to-end test against a running server
@@ -159,8 +178,8 @@ Development builds use the library submodules through Bottle; when you change on
 cached copy with `aqua bottle cache remove <name> <version>`), because the cache keeps one immutable copy per version.
 `build.ps1` and `tests/run.ps1` use a cache of their own.
 
-Requirements: an AquariusLang with `Terminal.Start`, `Application.Arguments`, compile errors with positions and
-SaturnUI (AquariusLangTW after 0.1.6). The frontend needs a browser with WebGPU (Chrome, Edge).
+Requirements: an AquariusLang with `Terminal.Start` (and its `Environment` option), `Application.Arguments`, compile
+errors with positions, SaturnUI and remote windows (the `RemoteWindow` library, AquariusLangTW 0.1.7). The frontend needs a browser with WebGPU (Chrome, Edge).
 
 ## License
 

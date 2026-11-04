@@ -15,6 +15,7 @@ var Serialization = import("Serialization");
 var Network = import("Network");
 var Files = import("Files");
 var Paths = import("Paths");
+var LiveWindows = import("windows.aqua");
 
 var NL = String.FromCode(10);
 var RS = String.FromCode(30);
@@ -24,7 +25,7 @@ var StreamLimit = 400000;
 
 struct Run { requestId; cells; token; process; lineMap; current; started; count; text; dropped; pending; finished; failed; file; carry; errorText; reported }
 struct Session { path; directory; history; count; queue; running; subscribers; state }
-struct Kernel { Execute; Interrupt; Restart; Subscribe; Unsubscribe; Status; Shutdown; LastExpression }
+struct Kernel { Execute; Interrupt; Restart; Subscribe; Unsubscribe; Status; Shutdown; AttachWindows; LastExpression }
 
 # ---- 最後一個運算式 / The last expression ----
 # 儲存格最後一個敘述若是運算式，就包成 __wellplay.result(...)，讓它的值成為 Out[n]（和 IPython 一樣）。宣告、指派、
@@ -366,6 +367,51 @@ var Create = function(options) {
         }
     };
 
+    # ---- 即時視窗 / Live windows ----
+    # 程式開的視窗成為當時執行中儲存格的輸出（application/vnd.aquarius.window+json，前端連到它的串流）；重播中的儲存格
+    # 開的視窗直接關閉，所以重播不會停在等人關掉的視窗。程式在開視窗前印出的內容先送到，所以「當時的儲存格」是確定的。
+    # A window a program opens becomes an output of the cell running then (application/vnd.aquarius.window+json: the
+    # frontend connects it to its stream); a window a replayed cell opens is closed at once, so replays never wait for
+    # someone to close a window. What the program printed before opening it arrives first, so "the cell running then"
+    # is certain.
+    var shownWindows = {};
+    var runOf = function(token) {
+        var keys = Hash.Keys(sessions);
+        for (var i = 0; i < len(keys); i++) {
+            var run = sessions[keys[i]].running;
+            if (run != null && run.token == token) { return {"session": sessions[keys[i]], "run": run}; }
+        }
+        return null;
+    };
+    var windowKey = (stream, window) => "window-" + String.From(stream) + "-" + String.From(window);
+    var windowOpened = function(token, stream, m) {
+        var found = runOf(token);
+        if (found == null) { return false; }
+        var run = found["run"];
+        if (run.current == null || !isTarget(run, run.current)) { return false; }
+        var key = windowKey(stream, m["window"]);
+        var spec = {"stream": stream, "window": m["window"], "title": m["title"], "width": m["width"], "height": m["height"]};
+        shownWindows[key] = {"session": found["session"], "cell": run.current, "spec": spec};
+        output(found["session"], run, run.current, {"output_type": "display_data", "data": {
+            "application/vnd.aquarius.window+json": spec, "text/plain": "<window: " + m["title"] + ">"}, "metadata": {},
+            "transient": {"display_id": key}});
+        return true;
+    };
+    var windowClosed = function(token, stream, m) {
+        var key = windowKey(stream, m["window"]);
+        var shown = shownWindows[key];
+        if (shown == null) { return null; }
+        Hash.Delete(shownWindows, key);
+        # 關閉的視窗不再佔位置（在其他 Jupyter 前端也是空的）。 / A closed window takes no room (and shows nothing in
+        # other Jupyter frontends either).
+        var spec = shown["spec"];
+        spec["closed"] = true;
+        broadcast(shown["session"], "kernel/update", {"cell": shown["cell"], "display": key, "output": {"output_type": "display_data",
+            "data": {"application/vnd.aquarius.window+json": spec, "text/plain": ""}, "metadata": {}, "transient": {"display_id": key}}});
+        return null;
+    };
+    var live = LiveWindows.Create({"accepts": token => runOf(token) != null, "opened": windowOpened, "closed": windowClosed, "log": log});
+
     # ---- 執行佇列 / The execution queue ----
     var next = null;
     var begin = function(session) {
@@ -390,6 +436,7 @@ var Create = function(options) {
         }
         var started = Network.Try(() => Terminal.Start(aqua, ["run", run.file], {
             "WorkingDirectory": session.directory,
+            "Environment": {"AQUARIUS_REMOTE_WINDOW": live.Address, "AQUARIUS_REMOTE_WINDOW_TOKEN": run.token},
             "OnOutput": text => standardOutput(session, run, text),
             "OnError": text => standardError(session, run, text),
         }));
@@ -441,9 +488,13 @@ var Create = function(options) {
         var session = sessionOf(path);
         var run = session.running;
         if (run == null || run.process == null) { return false; }
-        if (run.current != null && isTarget(run, run.current)) {
+        if (run.current != null && isTarget(run, run.current) && !Array.Contains(run.finished, run.current)) {
             error(session, run, run.current, "KeyboardInterrupt", "Interrupted / 已中斷", ["KeyboardInterrupt: Interrupted / 已中斷"]);
-        }
+        } elif (!run.reported) { abortQueued(session); }
+        # 已經回報過：被結束的程式不再算成另一個錯誤，也不會丟掉之後才排隊的執行（重新啟動後的第一個儲存格）。 / Reported
+        # now: the killed program is no second error and does not drop executions queued later (the first cell after a
+        # restart).
+        run.reported = true;
         run.failed = true;
         return run.process.Kill();
     };
@@ -480,8 +531,9 @@ var Create = function(options) {
             var run = sessions[keys[i]].running;
             if (run != null && run.process != null) { run.process.Kill(); }
         }
+        live.Shutdown();
         return null;
     };
     return Kernel(Execute: execute, Interrupt: interrupt, Restart: restart, Subscribe: subscribe, Unsubscribe: unsubscribe,
-        Status: status, Shutdown: shutdown, LastExpression: LastExpression);
+        Status: status, Shutdown: shutdown, AttachWindows: live.Attach, LastExpression: LastExpression);
 };

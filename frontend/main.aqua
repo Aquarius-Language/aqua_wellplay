@@ -17,7 +17,7 @@ var appModule = import("src/app.aqua");
 var views = import("src/views.aqua");
 
 views.Initialize(views.Modules(app: appModule, editors: editors, outputs: outputs, theme: theme));
-var app = appModule.Create(editors, theme);
+var app = appModule.Create(editors, theme, outputs.Windows);
 var session = null;
 var surface = null;
 var follow = null;
@@ -137,6 +137,9 @@ var frame = function() {
     var bg = theme.RGB(palette.background);
     p.background(bg[0], bg[1], bg[2]);
     p.drawUI(surface.Paint());
+    # 關閉的即時視窗留在繪製器中的紋理。 / Textures closed live windows left in the renderer.
+    var freed = outputs.Windows.Drain();
+    for (var i = 0; i < len(freed); i++) { p.drawUI(freed[i]); }
     # 編輯器的浮動視窗（自動完成、說明）畫在最上層。 / The editor's popups (completion, hover) on top of everything.
     var popup = editors.PaintPopup(focused);
     if (popup != null) { p.drawUI(popup); }

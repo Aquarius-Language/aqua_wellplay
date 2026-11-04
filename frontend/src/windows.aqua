@@ -1,0 +1,178 @@
+##
+即時視窗：儲存格程式開的視窗顯示在它的輸出裡，可以點、拖、捲動、打字，和在桌面上一樣。伺服器的 /windows WebSocket
+（server/windows.aqua）帶來每個程式的遠端視窗串流；每個串流一個 RemoteWindow.Viewer，它把畫面變成 SaturnUI 的
+Immediate 小工具可以畫的繪製清單，並把小工具收到的事件送回程式。程式用哪個函式庫畫（Processing、SaturnUI、ImGui、
+WGPU、OpenGL⋯）都一樣，所以新的功能不需要這裡跟著改。
+Live windows: the windows cell programs open show in their outputs, where they can be clicked, dragged, scrolled and
+typed into as on a desktop. The server's /windows WebSocket (server/windows.aqua) brings each program's remote window
+stream; one RemoteWindow.Viewer per stream turns frames into draw lists a SaturnUI Immediate widget paints and sends
+the widget's events back to the program. Whatever library the program draws with (Processing, SaturnUI, ImGui, WGPU,
+OpenGL ...) is the same here, so new features need no change in this file.
+##
+var RW = import("RemoteWindow");
+var Network = import("Network");
+var Interaction = import("Interaction");
+var UI = import("SaturnUI");
+var Serialization = import("Serialization");
+
+struct Live { socket; viewers; changed; density; frees; outbox; wake }
+var live = Live(socket: null, viewers: {}, changed: null, density: 1.0d, frees: [], outbox: [], wake: null);
+
+var keyOf = stream => String.From(stream);
+# 繪製與輸入的回呼不能等待（網頁上送出是非同步的），所以只把位元組排進佇列，由 sender 送出。 / Painting and input
+# callbacks cannot wait (sending is asynchronous on the web), so they only queue the bytes; `sender` sends them.
+var send = function(stream, viewer) {
+    var bytes = viewer.Outgoing();
+    if (len(bytes) == 0 || live.socket == null) { return null; }
+    var message = [stream & 255, (stream >> 8) & 255, (stream >> 16) & 255, (stream >> 24) & 255];
+    Array.AppendArray(message, bytes);
+    Array.Append(live.outbox, message);
+    if (live.wake != null) {
+        var wake = live.wake;
+        live.wake = null;
+        wake(null);
+    }
+    return null;
+};
+var sender = async function(socket) {
+    for (; live.socket == socket;) {
+        if (len(live.outbox) == 0) {
+            await Promise.New(function(resolve, reject) { live.wake = resolve; return null; });
+            continue;
+        }
+        var batch = live.outbox;
+        live.outbox = [];
+        for (var i = 0; i < len(batch); i++) { await socket.SendBytesAsync(batch[i]).Catch(reason => null); }
+    }
+    return null;
+};
+var changed = function() { if (live.changed != null) { live.changed(); } return null; };
+# 關閉的視窗在繪製器中的紋理，下一個影格釋放。 / A closed window's texture in the renderer, freed on the next frame.
+var forget = function(viewer, id) {
+    var freed = Network.Try(() => viewer.Forget(id));
+    if (freed.Success) { Array.Append(live.frees, freed.Value); }
+    return null;
+};
+var receive = function(stream, viewer, bytes) {
+    var fed = Network.Try(() => viewer.Feed(bytes));
+    if (!fed.Success) { Hash.Delete(live.viewers, keyOf(stream)); changed(); return null; }
+    var records = fed.Value;
+    var layout = false;
+    for (var i = 0; i < len(records); i++) {
+        var r = records[i];
+        var type = r["type"];
+        # 以視窗自己的大小與這個螢幕的像素密度檢視它（也讓程式送出完整的畫面）。 / View it at its own size and this
+        # screen's pixel density (which also has the program send its frame whole).
+        if (type == "open") { viewer.View(r["window"], r["width"], r["height"], live.density); layout = true; }
+        if (type == "close") { forget(viewer, r["window"]); layout = true; }
+        if (type == "size" || type == "title") { layout = true; }
+        if (type == "clipboard") { Network.Try(() => Interaction.SetClipboardText(r["text"])); }
+    }
+    send(stream, viewer);
+    if (layout) { changed(); }
+    return null;
+};
+
+# 連到伺服器的 /windows，斷線後重新連線（重新連線時伺服器先送進行中的視窗）。 / Connect to the server's /windows and
+# connect again after a disconnect (the server sends the windows already open first).
+var Connect = async function(url, density, onChange) {
+    live.changed = onChange;
+    live.density = density;
+    for (;;) {
+        var socket = await Network.ConnectWebSocketAsync(url, {"protocols": ["aqua-remote-window"], "timeout": 8000}).Catch(reason => null);
+        if (socket != null) {
+            live.socket = socket;
+            live.outbox = [];
+            sender(socket).Catch(reason => null);
+            for (;;) {
+                var message = await socket.ReceiveAsync().Catch(reason => null);
+                if (message == null || message.Closed) { break; }
+                var data = message.Data;
+                if (message.IsText) {
+                    var control = Network.Try(() => Serialization.ParseJson(message.Text));
+                    if (!control.Success) { continue; }
+                    var key = keyOf(control.Value["stream"]);
+                    if (control.Value["event"] == "start") { live.viewers[key] = RW.Viewer(); }
+                    if (control.Value["event"] == "end" && live.viewers[key] != null) {
+                        var ended = live.viewers[key];
+                        var windows = ended.Windows();
+                        for (var i = 0; i < len(windows); i++) { forget(ended, windows[i]["window"]); }
+                        Hash.Delete(live.viewers, key);
+                        changed();
+                    }
+                    continue;
+                }
+                if (len(data) < 4) { continue; }
+                var stream = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+                var viewer = live.viewers[keyOf(stream)];
+                if (viewer != null) { receive(stream, viewer, Array.Slice(data, 4, len(data))); }
+            }
+            live.socket = null;
+            live.viewers = {};
+            live.outbox = [];
+            # 讓等待中的 sender 結束。 / Let the waiting sender end.
+            if (live.wake != null) { var wake = live.wake; live.wake = null; wake(null); }
+            changed();
+        }
+        await Promise.Delay(2000);
+    }
+    return null;
+};
+
+# 每個影格畫完介面後：釋放關閉的視窗的紋理。 / After each frame's interface: free closed windows' textures.
+var Drain = function() {
+    var lists = live.frees;
+    live.frees = [];
+    return lists;
+};
+
+var find = function(viewer, id) {
+    var windows = viewer.Windows();
+    for (var i = 0; i < len(windows); i++) { if (windows[i]["window"] == id && !windows[i]["closed"]) { return windows[i]; } }
+    return null;
+};
+var note = (text, t) => UI.Text(text, class: "stream", style: {"color": t.faint});
+
+# 一個視窗輸出（application/vnd.aquarius.window+json：stream、window、title、width、height、closed）。視窗比可用寬度
+# 寬時縮小顯示；座標跟著換算。 / One window output (application/vnd.aquarius.window+json: stream, window, title, width,
+# height, closed). A window wider than the room shows scaled down; coordinates follow.
+var Widget = function(spec, t, available) {
+    if (spec["closed"] == true) { return UI.Box(style: {"height": 0}); }
+    var stream = spec["stream"];
+    var id = spec["window"];
+    var viewer = live.viewers[keyOf(stream)];
+    if (viewer == null) { return note("<window: " + String.From(spec["title"]) + "> · not running / 未執行", t); }
+    var window = find(viewer, id);
+    if (window == null) { return note("Opening " + String.From(spec["title"]) + "… · 開啟中", t); }
+    var width = double(window["width"]);
+    var height = double(window["height"]);
+    if (width > available) { height = height * available / width; width = double(available); }
+    return UI.Column(class: "richCard", crossAxis: "stretch", style: {"alignSelf": "flex-start", "gap": 6}, children: [
+        UI.Row(gap: 8, crossAxis: "center", children: [
+            UI.Expanded(child: UI.Text(window["title"], style: {"fontWeight": 600, "fontSize": 13, "color": t.muted})),
+            UI.Button(label: "✕", variant: "text", onPress: () => { viewer.Close(id); send(stream, viewer); }),
+        ]),
+        UI.Immediate(width: width, height: height, key: "window-" + keyOf(stream) + "-" + String.From(id),
+            # Immediate 在自己的座標中繪製，事件也是。 / An Immediate widget paints, and gets events, in its own
+            # coordinates.
+            paint: function(x, y, w, h) {
+                if (find(viewer, id) == null) { return null; }
+                var list = viewer.Paint(id, 0, 0, w, h);
+                send(stream, viewer);
+                return list;
+            },
+            feed: function(event) {
+                if (find(viewer, id) == null) { return false; }
+                var used = viewer.Send(id, event);
+                send(stream, viewer);
+                return used;
+            },
+            ime: () => if (find(viewer, id) == null) { null; } else { viewer.ImeRect(id); },
+            focus: function(focused) {
+                if (find(viewer, id) == null) { return null; }
+                viewer.Send(id, {"type": "focus", "action": if (focused) { 1; } else { 0; }});
+                send(stream, viewer);
+                return null;
+            }),
+    ]);
+};
