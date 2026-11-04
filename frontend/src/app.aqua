@@ -8,23 +8,24 @@ var rpc = import("AquaJSONRPC");
 var Network = import("Network");
 var Application = import("Application");
 var Storage = import("Storage");
-var Windows = import("windows.aqua");
 
 struct Doc { path; name; notebook; dirty; selected; editing; markdownEditing; editors; status; durations; kernel; savedAt; changedAt; pendingClear }
 struct App {
     endpoint; status; info; dir; files; docs; active; dark; sidebar; toast; toastAt; toastKind; dialog; surface;
-    editors; theme; rebuild; pendingD; scrollTo; examples; galleryOpen; clipboard
+    editors; theme; rebuild; pendingD; scrollTo; examples; galleryOpen; clipboard; windows
 }
 
 var NL = String.FromCode(10);
 var now = () => currentTime();
 
-var Create = function(editors, theme) {
+# windows：src/windows.aqua，與 outputs 用的是同一份（每次匯入都是另一份模組）。 / windows: src/windows.aqua, the
+# same instance outputs uses (every import is a module of its own).
+var Create = function(editors, theme, windows) {
     var dark = Storage.GetPreference("wellplay.dark");
     if (dark == null) { dark = import("Interaction").Conventions().darkMode; }
     return App(endpoint: null, status: "connecting", info: null, dir: "", files: [], docs: [], active: -1, dark: dark == true,
         sidebar: true, toast: null, toastAt: 0, toastKind: "info", dialog: null, surface: null, editors: editors, theme: theme,
-        rebuild: null, pendingD: 0, scrollTo: null, examples: null, galleryOpen: false, clipboard: null);
+        rebuild: null, pendingD: 0, scrollTo: null, examples: null, galleryOpen: false, clipboard: null, windows: windows);
 };
 
 var Toast = function(app, text, kind = "info") {
@@ -436,7 +437,7 @@ var Connect = async function(app) {
     # 儲存格程式開的視窗走另一條 WebSocket（src/windows.aqua）。 / The windows cell programs open come over another
     # WebSocket (src/windows.aqua).
     var density = Network.Try(() => import("Processing").displayDensity());
-    Windows.Connect("ws" + String.Slice(origin, 4, len(origin)) + "/windows?token=" + token, if (density.Success) { double(density.Value); } else { 1.0d; },
+    app.windows.Connect("ws" + String.Slice(origin, 4, len(origin)) + "/windows?token=" + token, if (density.Success) { double(density.Value); } else { 1.0d; },
         () => { if (app.surface != null) { app.surface.Rebuild(); } return null; }).Catch(reason => null);
     app.info = await opened.Call("wellplay/info", {}).Catch(e => null);
     await ListFiles(app, "");

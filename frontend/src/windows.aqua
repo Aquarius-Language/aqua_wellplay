@@ -15,17 +15,35 @@ var Interaction = import("Interaction");
 var UI = import("SaturnUI");
 var Serialization = import("Serialization");
 
-struct Live { socket; viewers; changed; density; frees }
-var live = Live(socket: null, viewers: {}, changed: null, density: 1.0d, frees: []);
+struct Live { socket; viewers; changed; density; frees; outbox; wake }
+var live = Live(socket: null, viewers: {}, changed: null, density: 1.0d, frees: [], outbox: [], wake: null);
 
 var keyOf = stream => String.From(stream);
+# 繪製與輸入的回呼不能等待（網頁上送出是非同步的），所以只把位元組排進佇列，由 sender 送出。 / Painting and input
+# callbacks cannot wait (sending is asynchronous on the web), so they only queue the bytes; `sender` sends them.
 var send = function(stream, viewer) {
     var bytes = viewer.Outgoing();
     if (len(bytes) == 0 || live.socket == null) { return null; }
     var message = [stream & 255, (stream >> 8) & 255, (stream >> 16) & 255, (stream >> 24) & 255];
     Array.AppendArray(message, bytes);
-    var socket = live.socket;
-    Network.Try(() => socket.SendBytes(message));
+    Array.Append(live.outbox, message);
+    if (live.wake != null) {
+        var wake = live.wake;
+        live.wake = null;
+        wake(null);
+    }
+    return null;
+};
+var sender = async function(socket) {
+    for (; live.socket == socket;) {
+        if (len(live.outbox) == 0) {
+            await Promise.New(function(resolve, reject) { live.wake = resolve; return null; });
+            continue;
+        }
+        var batch = live.outbox;
+        live.outbox = [];
+        for (var i = 0; i < len(batch); i++) { await socket.SendBytesAsync(batch[i]).Catch(reason => null); }
+    }
     return null;
 };
 var changed = function() { if (live.changed != null) { live.changed(); } return null; };
@@ -64,6 +82,8 @@ var Connect = async function(url, density, onChange) {
         var socket = await Network.ConnectWebSocketAsync(url, {"protocols": ["aqua-remote-window"], "timeout": 8000}).Catch(reason => null);
         if (socket != null) {
             live.socket = socket;
+            live.outbox = [];
+            sender(socket).Catch(reason => null);
             for (;;) {
                 var message = await socket.ReceiveAsync().Catch(reason => null);
                 if (message == null || message.Closed) { break; }
@@ -89,6 +109,9 @@ var Connect = async function(url, density, onChange) {
             }
             live.socket = null;
             live.viewers = {};
+            live.outbox = [];
+            # 讓等待中的 sender 結束。 / Let the waiting sender end.
+            if (live.wake != null) { var wake = live.wake; live.wake = null; wake(null); }
             changed();
         }
         await Promise.Delay(2000);

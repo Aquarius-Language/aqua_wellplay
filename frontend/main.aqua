@@ -17,7 +17,7 @@ var appModule = import("src/app.aqua");
 var views = import("src/views.aqua");
 
 views.Initialize(views.Modules(app: appModule, editors: editors, outputs: outputs, theme: theme));
-var app = appModule.Create(editors, theme);
+var app = appModule.Create(editors, theme, outputs.Windows);
 var session = null;
 var surface = null;
 var follow = null;
