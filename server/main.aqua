@@ -146,10 +146,11 @@ var serve = function() {
     var origin = "http://" + settings["host"] + ":" + String.From(port);
     var local = "http://localhost:" + String.From(port);
 
-    # /rpc 只接受帶有權杖、來自這個網站的連線（防止其他網頁在這台電腦上執行程式碼）。 / /rpc only takes connections
-    # with the token from this site (so no other page can run code on this machine).
+    # /rpc 與 /windows 只接受帶有權杖、來自這個網站的連線（防止其他網頁在這台電腦上執行程式碼或操作它的視窗）。 / /rpc
+    # and /windows only take connections with the token from this site (so no other page can run code on this machine
+    # or drive its windows).
     server.Use(function(request, writer, next) {
-        if (request.Path == "/rpc") {
+        if (request.Path == "/rpc" || request.Path == "/windows") {
             var given = request.Query("token");
             var from = request.Header("Origin");
             var sameSite = from == null || from == "" || from == origin || from == local;
@@ -165,6 +166,11 @@ var serve = function() {
             "platform": Terminal.Platform, "aqua": aqua});
     rpc.ServeWebSocket(server, "/rpc", function(endpoint, request) {
         protocol.Register(endpoint, services);
+        return null;
+    });
+    # 儲存格程式開的視窗（server/windows.aqua）。 / The windows cell programs open (server/windows.aqua).
+    server.Handle("GET /windows", async function(request, writer) {
+        await kernel.AttachWindows(writer.UpgradeWebSocket(["aqua-remote-window"]));
         return null;
     });
     server.Handle("GET /health", (request, writer) => writer.JSON({"ok": true, "sessions": kernel.Status()}));

@@ -1,14 +1,17 @@
 ##
 端對端測試：連到正在執行的 aqua_wellplay（WELLPLAY_URL，例如 ws://127.0.0.1:8901/rpc?token=t0k），建立筆記本、執行
-儲存格並檢查串流的輸出、豐富輸出、Out[n]、編譯與執行期錯誤、歷史（取代與重播）、中斷與重新啟動。成功時印出
-WELLPLAY_OK。
+儲存格並檢查串流的輸出、豐富輸出、Out[n]、編譯與執行期錯誤、歷史（取代與重播）、中斷、即時視窗（經由 /windows 的畫面
+與點擊，重播時關閉）與重新啟動。成功時印出 WELLPLAY_OK。
 The end-to-end test: connects to a running aqua_wellplay (WELLPLAY_URL, e.g. ws://127.0.0.1:8901/rpc?token=t0k),
 creates a notebook, runs cells and checks streamed text, rich outputs, Out[n], compile and runtime errors, the history
-(replacing and replaying), interrupting and restarting. Prints WELLPLAY_OK on success.
+(replacing and replaying), interrupting, a live window (its frames and clicks over /windows, closed when replayed)
+and restarting. Prints WELLPLAY_OK on success.
 ##
 var rpc = import("AquaJSONRPC");
 var Application = import("Application");
 var Serialization = import("Serialization");
+var Network = import("Network");
+var RW = import("RemoteWindow");
 # 字串沒有換行跳脫：以換行字元連接各行。 / Strings have no newline escape: join lines with a newline character.
 var NL = String.FromCode(10);
 var Q = "\"";
@@ -125,6 +128,81 @@ var interrupted = await endpoint.Call("kernel/interrupt", {"path": "test.ipynb"}
 await waitFor("h", 20000);
 var stop = ofType("h", "error");
 check("interrupt", interrupted["interrupted"] == true && finished["h"] == "error" && len(stop) == 1 && stop[0]["ename"] == "KeyboardInterrupt", dump("h"));
+
+# 即時視窗：儲存格開的視窗成為它的輸出，畫面經由 /windows 送來，點擊送回程式；重播時伺服器關閉它，重播不會停住。
+# A live window: the window a cell opens becomes its output, its frames come over /windows and a click goes back to the
+# program; replayed, the server closes it, so the replay does not stop there.
+var windows = await Network.ConnectWebSocketAsync(String.Replace(url, "/rpc?", "/windows?"), {"protocols": ["aqua-remote-window"], "timeout": 8000});
+var viewers = {};
+var lastFrame = {};
+var pump = async function() {
+    for (;;) {
+        var message = await windows.ReceiveAsync().Catch(reason => null);
+        if (message == null || message.Closed) { break; }
+        if (message.IsText) {
+            var control = Serialization.ParseJson(message.Text);
+            if (control["event"] == "start") { viewers[String.From(control["stream"])] = RW.Viewer(); }
+            continue;
+        }
+        var data = message.Data;
+        var number = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
+        var viewer = viewers[String.From(number)];
+        if (viewer == null) { continue; }
+        var records = viewer.Feed(Array.Slice(data, 4, len(data)));
+        for (var i = 0; i < len(records); i++) {
+            var r = records[i];
+            if (r["type"] == "open") { viewer.View(r["window"], r["width"], r["height"], 1); }
+            if (r["type"] == "frame") { lastFrame[String.From(number)] = r; }
+        }
+        var back = viewer.Outgoing();
+        if (len(back) > 0) {
+            var reply = [data[0], data[1], data[2], data[3]];
+            Array.AppendArray(reply, back);
+            windows.SendBytes(reply);
+        }
+    }
+    return null;
+};
+pump().Catch(reason => print("windows:", reason));
+var sketch = src(["var p = import(" + Q + "Processing" + Q + ");",
+    "p.run(function() { p.size(120, 80, p.P2D, " + Q + "live" + Q + "); return null; }, function() {",
+    "    p.background(255, 0, 0);",
+    "    if (p.isMousePressed) { print(" + Q + "clicked" + Q + ", p.mouseX, p.mouseY); p.exit(); }",
+    "    return null;",
+    "});"]);
+finished = {};
+events = {};
+await endpoint.Call("kernel/execute", {"path": "test.ipynb", "cells": [{"id": "w", "source": sketch}]});
+var spec = null;
+for (var t = 0; t < 600 && spec == null && finished["w"] == null; t++) {
+    var shown = ofType("w", "display_data");
+    if (len(shown) > 0) { spec = shown[0]["data"]["application/vnd.aquarius.window+json"]; } else { await Promise.Delay(50); }
+}
+check("window output", spec != null && spec["title"] == "live" && spec["width"] == 120 && spec["height"] == 80, dump("w"));
+var key = if (spec == null) { ""; } else { String.From(spec["stream"]); };
+for (var t = 0; t < 600 && lastFrame[key] == null; t++) { await Promise.Delay(50); }
+var pixel = null;
+if (lastFrame[key] != null) {
+    var image = viewers[key].Image(spec["window"]);
+    pixel = Array.Slice(image.Pixels(), 0, 4);
+    viewers[key].Paint(spec["window"], 0, 0, 120, 80);
+    viewers[key].Send(spec["window"], {"type": "move", "x": 15, "y": 10});
+    viewers[key].Send(spec["window"], {"type": "press", "x": 15, "y": 10, "button": 0});
+    var input = [spec["stream"] & 255, (spec["stream"] >> 8) & 255, (spec["stream"] >> 16) & 255, (spec["stream"] >> 24) & 255];
+    Array.AppendArray(input, viewers[key].Outgoing());
+    windows.SendBytes(input);
+}
+check("window frame", pixel != null && pixel[0] == 255 && pixel[1] == 0 && pixel[2] == 0, Serialization.Json(pixel));
+await waitFor("w", 30000);
+check("window click", finished["w"] == "ok" && textOf("w") == "clicked 15 10" + NL, dump("w"));
+var updates = Array.Filter(Hash.Get(events, "w", []), e => e["kind"] == "update");
+check("window closed", len(updates) == 1 && updates[0]["params"]["output"]["data"]["application/vnd.aquarius.window+json"]["closed"] == true,
+    Serialization.Json(updates));
+# w 在歷史中：重播時它的視窗被關閉，所以 w2 照常執行，也沒有視窗輸出。 / w is in the history: replayed, its window is
+# closed, so w2 runs as usual and shows no window.
+await run([{"id": "w2", "source": "print(" + Q + "after" + Q + ");"}]);
+check("window replay", finished["w2"] == "ok" && textOf("w2") == "after" + NL && len(ofType("w2", "display_data")) == 0, dump("w2"));
+windows.Close();
 
 # 重新啟動清除歷史。 / Restarting clears the history.
 await endpoint.Call("kernel/restart", {"path": "test.ipynb"});

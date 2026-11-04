@@ -1,15 +1,16 @@
 ##
 輸出的繪製：把 nbformat 的輸出（stream、display_data、execute_result、error）變成 SaturnUI 小工具。MIME 套組依優先順序
-選一種表示：進度、圖表、表格、圖片、Markdown、JSON、純文字（和 IPython 前端相同的做法）。新的 MIME 類型只要在
+選一種表示：即時視窗、進度、圖表、表格、圖片、Markdown、JSON、純文字（和 IPython 前端相同的做法）。新的 MIME 類型只要在
 `renderers` 加一項。
 Rendering outputs: nbformat outputs (stream, display_data, execute_result, error) become SaturnUI widgets. A MIME bundle
-shows its richest form in this order: progress, chart, table, image, Markdown, JSON, plain text (as IPython frontends
-do). A new MIME type is one more entry in `renderers`.
+shows its richest form in this order: live window, progress, chart, table, image, Markdown, JSON, plain text (as
+IPython frontends do). A new MIME type is one more entry in `renderers`.
 ##
 var UI = import("SaturnUI");
 var Saturn = import("Saturn");
 var Serialization = import("Serialization");
 var Processing = import("Processing");
+var Windows = import("windows.aqua");
 
 var NL = String.FromCode(10);
 
@@ -365,6 +366,7 @@ var PlainText = (text, t) => UI.Text(text, class: "stream");
 
 # MIME 類型的優先順序與繪製方式。 / MIME types in order of preference, with their renderers.
 var renderers = [
+    ["application/vnd.aquarius.window+json", (v, m, t, w) => Windows.Widget(v, t, w)],
     ["application/vnd.wellplay.progress+json", (v, m, t, w) => Progress(v, t)],
     ["application/vnd.wellplay.chart+json", (v, m, t, w) => Chart(v, t, w)],
     ["application/vnd.wellplay.table+json", (v, m, t, w) => Table(v, t)],
