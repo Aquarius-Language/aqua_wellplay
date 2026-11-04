@@ -202,6 +202,30 @@ check("window closed", len(updates) == 1 && updates[0]["params"]["output"]["data
 # closed, so w2 runs as usual and shows no window.
 await run([{"id": "w2", "source": "print(" + Q + "after" + Q + ");"}]);
 check("window replay", finished["w2"] == "ok" && textOf("w2") == "after" + NL && len(ofType("w2", "display_data")) == 0, dump("w2"));
+
+# 重新載入的前端：另一條連線開的視窗程式還在執行時，新的連線開啟筆記本看得到執行中的儲存格，也能中斷它。 / A reloaded
+# frontend: while a window program started over another connection still runs, a new connection opening the notebook
+# sees the running cell and can interrupt it.
+var before = await rpc.ConnectWebSocketAsync(url, {"timeout": 8000});
+await before.Call("notebook/open", {"path": "test.ipynb"});
+finished = {};
+events = {};
+var forever = src(["var p = import(" + Q + "Processing" + Q + ");",
+    "p.run(function() { p.size(120, 80, p.P2D, " + Q + "forever" + Q + "); return null; }, function() { p.background(0, 0, 255); return null; });"]);
+await before.Call("kernel/execute", {"path": "test.ipynb", "cells": [{"id": "r", "source": forever}]});
+for (var t = 0; t < 600 && len(ofType("r", "display_data")) == 0 && finished["r"] == null; t++) { await Promise.Delay(50); }
+before.Close();
+var after = await rpc.ConnectWebSocketAsync(url, {"timeout": 8000});
+var reopened = await after.Call("notebook/open", {"path": "test.ipynb"});
+check("reload sees running", reopened["kernel"]["state"] == "busy" && Hash.Get(reopened["kernel"], "cells", {})["r"] == "running",
+    Serialization.Json(reopened["kernel"]));
+var reshown = Hash.Get(reopened["kernel"], "windows", []);
+check("reload shows window", len(reshown) == 1 && reshown[0]["cell"] == "r" &&
+    reshown[0]["output"]["data"]["application/vnd.aquarius.window+json"]["title"] == "forever", Serialization.Json(reshown));
+var stopped = await after.Call("kernel/interrupt", {"path": "test.ipynb"});
+await waitFor("r", 20000);
+check("reload interrupt", stopped["interrupted"] == true && finished["r"] == "error" && len(ofType("r", "error")) == 1, dump("r"));
+after.Close();
 windows.Close();
 
 # 重新啟動清除歷史。 / Restarting clears the history.

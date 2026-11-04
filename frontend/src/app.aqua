@@ -118,8 +118,21 @@ var Open = async function(app, path) {
     if (opened == null) { return null; }
     var kernel = opened["kernel"];
     var doc = Doc(path: path, name: nameOf(path), notebook: opened["notebook"], dirty: false, selected: 0, editing: null,
-        markdownEditing: [], editors: {}, status: {}, durations: {}, kernel: kernel, savedAt: now(), changedAt: 0, pendingClear: []);
+        markdownEditing: [], editors: {}, status: Hash.Get(kernel, "cells", {}), durations: {}, kernel: kernel, savedAt: now(), changedAt: 0, pendingClear: []);
     if (len(doc.notebook["cells"]) == 0) { Array.Append(doc.notebook["cells"], newCell("code", "")); }
+    # 重新載入時，還在執行的儲存格的即時視窗再顯示一次。 / After a reload, the live windows of cells still running show again.
+    var windows = Hash.Get(kernel, "windows", []);
+    for (var i = 0; i < len(windows); i++) {
+        var cell = cellOf(doc, windows[i]["cell"]);
+        if (cell == null) { continue; }
+        # 存檔裡可能已經有同一個視窗：換成現在的。 / The saved file may hold the same window already: use the current one.
+        var spec = windows[i]["output"]["data"]["application/vnd.aquarius.window+json"];
+        cell["outputs"] = Array.Filter(cell["outputs"], function(o) {
+            var old = Hash.Get(Hash.Get(o, "data", {}), "application/vnd.aquarius.window+json", null);
+            return old == null || old["stream"] != spec["stream"] || old["window"] != spec["window"];
+        });
+        Array.Append(cell["outputs"], windows[i]["output"]);
+    }
     Array.Append(app.docs, doc);
     app.active = len(app.docs) - 1;
     if (app.surface != null) { app.surface.Rebuild(); }
