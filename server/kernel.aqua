@@ -508,10 +508,28 @@ var Create = function(options) {
         broadcast(session, "kernel/restarted", {});
         return true;
     };
+    # 還沒結束的儲存格：{id: "running" | "queued"}，讓重新載入的前端顯示它們（與中斷的對象）。 / The cells not finished
+    # yet, {id: "running" | "queued"}, so a reloaded frontend shows them (and what an interrupt stops).
+    var cellStates = function(session) {
+        var states = {};
+        var run = session.running;
+        if (run != null) {
+            for (var i = 0; i < len(run.cells); i++) {
+                var id = run.cells[i]["id"];
+                if (!Array.Contains(run.finished, id)) { states[id] = if (id == run.current) { "running"; } else { "queued"; }; }
+            }
+        }
+        for (var q = 0; q < len(session.queue); q++) {
+            var cells = session.queue[q]["cells"];
+            for (var c = 0; c < len(cells); c++) { states[cells[c]["id"]] = "queued"; }
+        }
+        return states;
+    };
     var subscribe = function(path, endpoint) {
         var session = sessionOf(path);
         if (!Array.Contains(session.subscribers, endpoint)) { Array.Append(session.subscribers, endpoint); }
-        return {"state": session.state, "count": session.count, "queued": len(session.queue), "history": Array.Map(session.history, h => h["id"])};
+        return {"state": session.state, "count": session.count, "queued": len(session.queue), "history": Array.Map(session.history, h => h["id"]),
+            "cells": cellStates(session)};
     };
     var unsubscribe = function(endpoint) {
         var keys = Hash.Keys(sessions);

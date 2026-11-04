@@ -118,7 +118,7 @@ var Open = async function(app, path) {
     if (opened == null) { return null; }
     var kernel = opened["kernel"];
     var doc = Doc(path: path, name: nameOf(path), notebook: opened["notebook"], dirty: false, selected: 0, editing: null,
-        markdownEditing: [], editors: {}, status: {}, durations: {}, kernel: kernel, savedAt: now(), changedAt: 0, pendingClear: []);
+        markdownEditing: [], editors: {}, status: Hash.Get(kernel, "cells", {}), durations: {}, kernel: kernel, savedAt: now(), changedAt: 0, pendingClear: []);
     if (len(doc.notebook["cells"]) == 0) { Array.Append(doc.notebook["cells"], newCell("code", "")); }
     Array.Append(app.docs, doc);
     app.active = len(app.docs) - 1;

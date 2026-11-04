@@ -149,7 +149,10 @@ var Widget = function(spec, t, available) {
     if (width > available) { height = height * available / width; width = double(available); }
     return UI.Column(class: "richCard", crossAxis: "stretch", style: {"alignSelf": "flex-start", "gap": 6}, children: [
         UI.Row(gap: 8, crossAxis: "center", children: [
-            UI.Expanded(child: UI.Text(window["title"], style: {"fontWeight": 600, "fontSize": 13, "color": t.muted})),
+            # 一行：在還沒有寬度的版面階段，可換行的標題會一字一行，把列撐高、按鈕被擠到下面。 / One line: in a layout
+            # pass without a width yet, a wrapping title takes one character per line, making the row tall and pushing
+            # the button down.
+            UI.Expanded(child: UI.Text(window["title"], maxLines: 1, ellipsis: true, style: {"fontWeight": 600, "fontSize": 13, "color": t.muted})),
             UI.Button(label: "✕", variant: "text", onPress: () => { viewer.Close(id); send(stream, viewer); }),
         ]),
         UI.Immediate(width: width, height: height, key: "window-" + keyOf(stream) + "-" + String.From(id),
