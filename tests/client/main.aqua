@@ -219,6 +219,9 @@ var after = await rpc.ConnectWebSocketAsync(url, {"timeout": 8000});
 var reopened = await after.Call("notebook/open", {"path": "test.ipynb"});
 check("reload sees running", reopened["kernel"]["state"] == "busy" && Hash.Get(reopened["kernel"], "cells", {})["r"] == "running",
     Serialization.Json(reopened["kernel"]));
+var reshown = Hash.Get(reopened["kernel"], "windows", []);
+check("reload shows window", len(reshown) == 1 && reshown[0]["cell"] == "r" &&
+    reshown[0]["output"]["data"]["application/vnd.aquarius.window+json"]["title"] == "forever", Serialization.Json(reshown));
 var stopped = await after.Call("kernel/interrupt", {"path": "test.ipynb"});
 await waitFor("r", 20000);
 check("reload interrupt", stopped["interrupted"] == true && finished["r"] == "error" && len(ofType("r", "error")) == 1, dump("r"));

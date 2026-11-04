@@ -10,7 +10,7 @@ server pushes execution state and outputs as notifications (kernel/...).
   files/create {path, kind}            → {path}       kind: directory | notebook | file
   files/rename {from, to}              → {path}
   files/delete {path}                  → {ok}
-  notebook/open {path}                 → {notebook, kernel: {state, count, queued, history, cells: {id: running | queued}}}
+  notebook/open {path}                 → {notebook, kernel: {state, count, queued, history, cells: {id: running | queued}, windows: [{cell, output}]}}
   notebook/save {path, notebook}       → {ok}
   kernel/execute {path, cells: [{id, source}]}  → {queued}
   examples/list                        → [{category, title, description, icon, path}]

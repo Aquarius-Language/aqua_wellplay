@@ -525,11 +525,25 @@ var Create = function(options) {
         }
         return states;
     };
+    # 這個筆記本還開著的即時視窗：[{"cell", "output"}]，讓重新載入的前端再顯示它們。 / The live windows of this notebook
+    # still open, [{"cell", "output"}], so a reloaded frontend shows them again.
+    var openWindows = function(session) {
+        var list = [];
+        var keys = Hash.Keys(shownWindows);
+        for (var i = 0; i < len(keys); i++) {
+            var shown = shownWindows[keys[i]];
+            if (shown["session"] != session) { continue; }
+            Array.Append(list, {"cell": shown["cell"], "output": {"output_type": "display_data", "data": {
+                "application/vnd.aquarius.window+json": shown["spec"], "text/plain": "<window: " + shown["spec"]["title"] + ">"},
+                "metadata": {}, "transient": {"display_id": keys[i]}}});
+        }
+        return list;
+    };
     var subscribe = function(path, endpoint) {
         var session = sessionOf(path);
         if (!Array.Contains(session.subscribers, endpoint)) { Array.Append(session.subscribers, endpoint); }
         return {"state": session.state, "count": session.count, "queued": len(session.queue), "history": Array.Map(session.history, h => h["id"]),
-            "cells": cellStates(session)};
+            "cells": cellStates(session), "windows": openWindows(session)};
     };
     var unsubscribe = function(endpoint) {
         var keys = Hash.Keys(sessions);
