@@ -11,7 +11,7 @@ var Storage = import("Storage");
 
 struct Doc { path; name; notebook; dirty; selected; editing; markdownEditing; editors; status; durations; kernel; savedAt; changedAt; pendingClear }
 struct App {
-    endpoint; status; info; dir; files; docs; active; dark; sidebar; toast; toastAt; toastKind; dialog; surface;
+    endpoint; status; info; dir; files; docs; active; dark; sidebar; sidebarWidth; toast; toastAt; toastKind; dialog; surface;
     editors; theme; rebuild; pendingD; scrollTo; examples; galleryOpen; clipboard; windows
 }
 
@@ -23,8 +23,9 @@ var now = () => currentTime();
 var Create = function(editors, theme, windows) {
     var dark = Storage.GetPreference("wellplay.dark");
     if (dark == null) { dark = import("Interaction").Conventions().darkMode; }
+    var sidebarWidth = Storage.GetPreference("wellplay.sidebarWidth");
     return App(endpoint: null, status: "connecting", info: null, dir: "", files: [], docs: [], active: -1, dark: dark == true,
-        sidebar: true, toast: null, toastAt: 0, toastKind: "info", dialog: null, surface: null, editors: editors, theme: theme,
+        sidebar: true, sidebarWidth: if (sidebarWidth == null) { 264; } else { sidebarWidth; }, toast: null, toastAt: 0, toastKind: "info", dialog: null, surface: null, editors: editors, theme: theme,
         rebuild: null, pendingD: 0, scrollTo: null, examples: null, galleryOpen: false, clipboard: null, windows: windows);
 };
 
@@ -55,6 +56,14 @@ var cellOf = function(doc, id) {
     return doc.notebook["cells"][i];
 };
 var touch = function(doc) { doc.dirty = true; doc.changedAt = now(); return null; };
+
+# 拖曳檔案側欄與筆記本之間的分隔線時，記住側欄的寬度。 / Dragging the bar between the file sidebar and the notebook
+# remembers the sidebar's width.
+var ResizeSidebar = function(app, width) {
+    app.sidebarWidth = width;
+    Storage.SetPreference("wellplay.sidebarWidth", width);
+    return null;
+};
 
 # ---- 主題 / Themes ----
 var Palette = app => app.theme.Of(app.dark);
