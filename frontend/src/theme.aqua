@@ -91,7 +91,7 @@ var Sheet = function(p) {
         "tool.danger:hover": {"background": p.dangerSoft, "color": p.danger},
         "pill": {"flexDirection": "row", "alignItems": "center", "gap": 7, "height": 28, "paddingHorizontal": 11,
             "borderRadius": 14, "background": p.sunken, "borderWidth": 1, "borderColor": p.border, "fontSize": 12, "color": p.muted},
-        "sidebar": {"width": 264, "minHeight": 0, "background": p.surface, "borderRightWidth": 1, "borderColor": p.border, "padding": 12, "gap": 10},
+        "sidebar": {"flexGrow": 1, "minHeight": 0, "background": p.surface, "padding": 12, "gap": 10},
         "sideTitle": {"fontSize": 11, "fontWeight": 700, "color": p.faint},
         "crumbs": {"flexDirection": "row", "alignItems": "center", "gap": 2, "flexWrap": "wrap", "fontSize": 12, "color": p.muted},
         "crumb": {"paddingHorizontal": 5, "paddingVertical": 2, "borderRadius": 6, "cursor": "pointer"},

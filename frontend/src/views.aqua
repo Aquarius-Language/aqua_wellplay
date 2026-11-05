@@ -484,13 +484,15 @@ var Root = function(app) {
     return UI.Stack(style: {"flexGrow": 1}, children: [
         UI.Column(class: "app", crossAxis: "stretch", style: {"position": "absolute", "left": 0, "top": 0, "right": 0, "bottom": 0}, children: [
             TopBar(app, t, specs),
-            UI.Row(crossAxis: "stretch", style: {"flexGrow": 1, "flexShrink": 1, "flexBasis": 0, "minHeight": 0}, children: [
-                if (app.sidebar) Sidebar(app, t),
-                UI.Column(crossAxis: "stretch", style: {"flexGrow": 1, "flexShrink": 1, "flexBasis": 0, "minWidth": 0, "minHeight": 0}, children: [
+            # 側欄與筆記本之間的分隔線可以拖曳（Ctrl+B 收合側欄）。 / The bar between the sidebar and the notebook drags
+            # (Ctrl+B collapses the sidebar).
+            UI.SplitView(size: app.sidebarWidth, min: 180, max: 640, minSecond: 360, collapsed: !app.sidebar,
+                onResize: width => M.app.ResizeSidebar(app, width), style: {"flexBasis": 0, "minHeight": 0},
+                first: Sidebar(app, t),
+                second: UI.Column(crossAxis: "stretch", style: {"minWidth": 0, "minHeight": 0}, children: [
                     Tabs(app, t),
                     UI.Column(class: "page", crossAxis: "stretch", children: [page]),
-                ]),
-            ]),
+                ])),
             StatusBar(app, t),
         ]),
         Toast(app, t),
