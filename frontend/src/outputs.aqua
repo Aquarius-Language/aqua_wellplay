@@ -309,33 +309,42 @@ var Chart = function(spec, t, width) {
 };
 
 # ---- 圖片 / Images ----
-var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-var decodeTable = null;
-var Base64 = function(text) {
-    if (decodeTable == null) {
-        decodeTable = {};
-        for (var i = 0; i < 64; i++) { decodeTable[alphabet[i]] = i; }
-    }
-    var bytes = [];
-    var buffer = 0;
-    var bits = 0;
-    for (var i = 0; i < len(text); i++) {
-        var v = decodeTable[text[i]];
-        if (v == null) { continue; }
-        buffer = ((buffer << 6) | v) & 16777215;
-        bits += 6;
-        if (bits >= 8) { bits -= 8; Array.Append(bytes, (buffer >> bits) & 255); }
-    }
-    return bytes;
-};
-# 解碼過的圖片依內容快取。 / Decoded images, cached by content.
+# 解碼過的圖片依內容快取；KeepImages 丟掉不再顯示的。 / Decoded images, cached by content; KeepImages drops those no
+# output shows any more.
 var images = {};
-var Image = function(base64, metadata, t) {
+var imageMimes = ["image/png", "image/jpeg", "image/gif"];
+var imageKey = function(base64) {
     var edge = if (len(base64) < 64) { len(base64); } else { 64; };
-    var key = String.From(len(base64)) + ":" + String.Slice(base64, 0, edge) + String.Slice(base64, len(base64) - edge, len(base64));
+    return String.From(len(base64)) + ":" + String.Slice(base64, 0, edge) + String.Slice(base64, len(base64) - edge, len(base64));
+};
+# 只留下這些筆記本的輸出還在顯示的圖片（被丟掉的圖片與其紋理由回收器釋放）。 / Keeps only the images the outputs of
+# these notebooks still show (the collector frees the dropped images and their textures).
+var KeepImages = function(docs) {
+    if (len(images) == 0) { return null; }
+    var shown = {};
+    for (var d = 0; d < len(docs); d++) {
+        var cells = docs[d].notebook["cells"];
+        for (var c = 0; c < len(cells); c++) {
+            var outputs = Hash.Get(cells[c], "outputs", []);
+            for (var o = 0; o < len(outputs); o++) {
+                var data = Hash.Get(outputs[o], "data", null);
+                if (data == null) { continue; }
+                for (var m = 0; m < len(imageMimes); m++) { if (Hash.Has(data, imageMimes[m])) { shown[imageKey(data[imageMimes[m]])] = true; } }
+            }
+        }
+    }
+    var keys = Hash.Keys(images);
+    for (var k = 0; k < len(keys); k++) { if (!Hash.Has(shown, keys[k])) { Hash.Delete(images, keys[k]); } }
+    return null;
+};
+# mime 的 Base64 圖片：以 data URI 交給 loadImage，在原生層解碼（不在腳本中建立位元組陣列，數 MB 的圖片因此不會撐大
+# 網頁的記憶體）。 / A Base64 image of `mime`: loadImage decodes it natively as a data URI (no byte array in the script,
+# so multi-megabyte pictures do not swell the page's memory).
+var Image = function(base64, mime, metadata, t) {
+    var key = imageKey(base64);
     var image = images[key];
     if (image == null) {
-        image = Processing.loadImage(Base64(base64));
+        image = Processing.loadImage("data:" + mime + ";base64," + base64);
         images[key] = image;
     }
     var width = image.width;
@@ -370,9 +379,9 @@ var renderers = [
     ["application/vnd.wellplay.progress+json", (v, m, t, w) => Progress(v, t)],
     ["application/vnd.wellplay.chart+json", (v, m, t, w) => Chart(v, t, w)],
     ["application/vnd.wellplay.table+json", (v, m, t, w) => Table(v, t)],
-    ["image/png", (v, m, t, w) => Image(v, m, t)],
-    ["image/jpeg", (v, m, t, w) => Image(v, m, t)],
-    ["image/gif", (v, m, t, w) => Image(v, m, t)],
+    ["image/png", (v, m, t, w) => Image(v, "image/png", m, t)],
+    ["image/jpeg", (v, m, t, w) => Image(v, "image/jpeg", m, t)],
+    ["image/gif", (v, m, t, w) => Image(v, "image/gif", m, t)],
     ["text/markdown", (v, m, t, w) => Markdown(v, t)],
     ["application/json", (v, m, t, w) => Json(v, t)],
     ["text/plain", (v, m, t, w) => PlainText(v, t)],

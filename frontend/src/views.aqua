@@ -476,6 +476,7 @@ var Dialog = function(app, t) {
 
 # ---- 根 / The root ----
 var Root = function(app) {
+    M.outputs.KeepImages(app.docs);
     var t = M.app.Palette(app);
     var doc = M.app.ActiveDoc(app);
     var specs = MenuSpecs(app);
