@@ -321,6 +321,9 @@ var Run = async function(app, doc, indexes) {
         if (String.Trim(cell["source"]) == "") { continue; }
         Array.Append(code, {"id": cell["id"], "source": cell["source"]});
         doc.status[cell["id"]] = "queued";
+        # 舊的輸出立刻清除，進度一目了然。 / Old outputs clear at once, so progress is easy to follow.
+        cell["outputs"] = [];
+        cell["execution_count"] = null;
     }
     if (len(code) == 0) { return null; }
     if (doc.dirty) { await Save(app, doc); }
