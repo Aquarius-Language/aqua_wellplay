@@ -414,6 +414,33 @@ var Create = function(options) {
 
     # ---- 執行佇列 / The execution queue ----
     var next = null;
+    # 一次執行結束：回報錯誤、結束儲存格、清理並執行佇列中的下一個。exitCode 為 null 時 failure 說明等待失敗的原因。 /
+    # A run ended: reports errors, finishes its cells, cleans up and starts the next one in the queue. With exitCode null,
+    # failure says why waiting for the program failed.
+    var finish = function(session, run, exitCode, failure) {
+        if (run.carry != "") { standardOutput(session, run, NL); }
+        reportErrors(session, run);
+        var ok = exitCode == 0 && !run.failed;
+        var id = if (run.current != null && isTarget(run, run.current)) { run.current; } else { run.cells[0]["id"]; };
+        if (failure != null) {
+            log("run " + session.path + " failed: " + failure);
+            error(session, run, id, "KernelError", failure, ["The kernel lost the program's process / 核心失去了程式的行程：", failure]);
+        } elif (!ok && !run.reported) {
+            # 失敗卻沒有任何錯誤訊息：至少說出結束代碼與標準錯誤。 / A failure without an error message: say at least
+            # the exit code and standard error.
+            var detail = String.Trim(run.errorText);
+            error(session, run, id, "KernelError", "The program ended with exit code " + String.From(exitCode) + " / 程式結束代碼 " + String.From(exitCode),
+                if (detail == "") { []; } else { String.Split(detail, NL); });
+        }
+        if (run.current != null && isTarget(run, run.current)) { finishCell(session, run, run.current, if (ok) { "ok"; } else { "error"; }); }
+        # 沒有執行到的儲存格（前面出錯或被中斷）。 / Cells that never ran (an earlier error or an interrupt).
+        for (var i = 0; i < len(run.cells); i++) { finishCell(session, run, run.cells[i]["id"], if (ok) { "ok"; } else { "aborted"; }); }
+        Network.Try(() => Files.Delete(Files.Resolve(run.file), false));
+        session.running = null;
+        setState(session, "idle");
+        next(session);
+        return null;
+    };
     var begin = function(session) {
         if (session.running != null || len(session.queue) == 0) { return null; }
         var request = session.queue[0];
@@ -450,27 +477,11 @@ var Create = function(options) {
         }
         run.process = started.Value;
         log("run " + session.path + " (" + String.From(len(run.cells)) + " cell(s), " + String.From(len(session.history)) + " in history)");
-        run.process.WaitAsync().Then(result => {
-            if (run.carry != "") { standardOutput(session, run, NL); }
-            reportErrors(session, run);
-            var ok = result.ExitCode == 0 && !run.failed;
-            # 失敗卻沒有任何錯誤訊息：至少說出結束代碼與標準錯誤。 / A failure without an error message: say at least the
-            # exit code and standard error.
-            if (!ok && !run.reported) {
-                var id = if (run.current != null && isTarget(run, run.current)) { run.current; } else { run.cells[0]["id"]; };
-                var detail = String.Trim(run.errorText);
-                error(session, run, id, "KernelError", "The program ended with exit code " + String.From(result.ExitCode) + " / 程式結束代碼 " + String.From(result.ExitCode),
-                    if (detail == "") { []; } else { String.Split(detail, NL); });
-            }
-            if (run.current != null && isTarget(run, run.current)) { finishCell(session, run, run.current, if (ok) { "ok"; } else { "error"; }); }
-            # 沒有執行到的儲存格（前面出錯或被中斷）。 / Cells that never ran (an earlier error or an interrupt).
-            for (var i = 0; i < len(run.cells); i++) { finishCell(session, run, run.cells[i]["id"], if (ok) { "ok"; } else { "aborted"; }); }
-            Network.Try(() => Files.Delete(Files.Resolve(run.file), false));
-            session.running = null;
-            setState(session, "idle");
-            next(session);
-            return null;
-        });
+        # 等待失敗（例如程式留下的子程序一直佔著輸出）也要結束這次執行並顯示原因，不讓伺服器因未處理的拒絕而結束。 /
+        # A failed wait (such as a process the program left behind holding its output) also ends the run and shows why,
+        # instead of an unhandled rejection ending the server.
+        run.process.WaitAsync().Then(result => finish(session, run, result.ExitCode, null),
+            reason => finish(session, run, null, String.From(reason)));
         return null;
     };
     next = begin;
