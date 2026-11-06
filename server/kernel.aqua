@@ -22,6 +22,9 @@ var RS = String.FromCode(30);
 # 一個儲存格最多保留的文字輸出（UTF-16 單位）；之後的輸出只留下一行說明。 / The text output kept per cell (UTF-16
 # units); after it one line says the rest was dropped.
 var StreamLimit = 400000;
+# 一個豐富輸出（顯示、更新、Out[n]）最多的 JSON 長度，約 24 MB 的圖片。 / The JSON length one rich output (display,
+# update, Out[n]) may have: an image of about 24 MB.
+var OutputLimit = 32000000;
 
 struct Run { requestId; cells; token; process; lineMap; current; started; count; text; dropped; pending; finished; failed; file; carry; errorText; reported }
 struct Session { path; directory; history; count; queue; running; subscribers; state }
@@ -259,6 +262,15 @@ var Create = function(options) {
         }
     };
     var message = function(session, run, text) {
+        if (len(text) > OutputLimit) {
+            # 太大的豐富輸出只留下一行說明，網頁不會因一個輸出用完記憶體。 / A rich output too large leaves one line
+            # instead, so a single output cannot exhaust the page's memory.
+            if (run.current != null && isTarget(run, run.current)) {
+                appendText(session, run, "… an output of " + String.From(len(text) / 1000000) + " MB was too large to show / 輸出過大（" +
+                    String.From(len(text) / 1000000) + " MB），未顯示" + NL);
+            }
+            return null;
+        }
         var parsed = Network.Try(() => Serialization.ParseJson(text));
         if (!parsed.Success) { return null; }
         var m = parsed.Value;
@@ -445,6 +457,13 @@ var Create = function(options) {
         if (session.running != null || len(session.queue) == 0) { return null; }
         var request = session.queue[0];
         Array.Delete(session.queue, 0, 1);
+        # 從頭執行（Run all）：程式本來就從空白狀態開始，所以歷史與計數也從頭開始，和 Jupyter 的「重新啟動並全部執行」
+        # 一樣從 [1] 編號。 / A fresh run (Run all): the program starts from nothing anyway, so the history and the count
+        # start over too, numbering from [1] like Jupyter's restart and run all.
+        if (request["fresh"]) {
+            session.history = [];
+            session.count = 0;
+        }
         var run = Run(requestId: request["id"], cells: request["cells"], token: hexOf(Network.RandomBytes(8)), process: null,
             lineMap: [], current: null, started: {}, count: {}, text: "", dropped: [], pending: [], finished: [], failed: false,
             file: "", carry: "", errorText: "", reported: false);
@@ -486,11 +505,12 @@ var Create = function(options) {
     };
     next = begin;
 
-    # cells：[{"id", "source"}]，依序執行。 / cells: [{"id", "source"}], run in order.
-    var execute = function(path, cells) {
+    # cells：[{"id", "source"}]，依序執行；fresh 時不重播歷史，計數從 1 開始。 / cells: [{"id", "source"}], run in
+    # order; fresh replays no history and counts from 1.
+    var execute = function(path, cells, fresh = false) {
         var session = sessionOf(path);
         if (len(cells) == 0) { return {"queued": 0}; }
-        Array.Append(session.queue, {"id": hexOf(Network.RandomBytes(4)), "cells": cells});
+        Array.Append(session.queue, {"id": hexOf(Network.RandomBytes(4)), "cells": cells, "fresh": fresh});
         for (var i = 0; i < len(cells); i++) { broadcast(session, "kernel/queued", {"cell": cells[i]["id"]}); }
         if (session.running == null) { begin(session); } else { setState(session, "busy"); }
         return {"queued": len(cells)};

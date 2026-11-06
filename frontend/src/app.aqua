@@ -286,7 +286,7 @@ var SaveAll = function(app) { for (var i = 0; i < len(app.docs); i++) { Save(app
 var CloseAll = function(app) { for (; len(app.docs) > 0;) { Close(app, 0); } app.active = -1; return null; };
 var RestartAndRunAll = async function(app, doc) {
     await Restart(app, doc);
-    await Run(app, doc, RunAll(doc));
+    await Run(app, doc, RunAll(doc), true);
     return null;
 };
 # ---- 範例 / Examples ----
@@ -310,9 +310,9 @@ var OpenExample = async function(app, path) {
 };
 
 # ---- 執行 / Running ----
-# 執行儲存格（索引）。Markdown 儲存格只是結束編輯並顯示。 / Run cells by index; Markdown cells just stop editing and
-# render.
-var Run = async function(app, doc, indexes) {
+# 執行儲存格（索引）。Markdown 儲存格只是結束編輯並顯示。fresh（全部執行）時核心從頭開始，編號從 [1] 起。 / Run cells
+# by index; Markdown cells just stop editing and render. With fresh (Run all) the kernel starts over, numbering from [1].
+var Run = async function(app, doc, indexes, fresh = false) {
     var cells = doc.notebook["cells"];
     var code = [];
     for (var i = 0; i < len(indexes); i++) {
@@ -327,7 +327,7 @@ var Run = async function(app, doc, indexes) {
     }
     if (len(code) == 0) { return null; }
     if (doc.dirty) { await Save(app, doc); }
-    await app.endpoint.Call("kernel/execute", {"path": doc.path, "cells": code}).Catch(function(error) {
+    await app.endpoint.Call("kernel/execute", {"path": doc.path, "cells": code, "fresh": fresh}).Catch(function(error) {
         for (var i = 0; i < len(code); i++) { Hash.Delete(doc.status, code[i]["id"]); }
         Toast(app, "Cannot run: " + Hash.Get(error, "message", "?"), "error");
         return null;

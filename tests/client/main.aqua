@@ -113,11 +113,39 @@ await run([{"id": "f1", "source": "print(1);"}, {"id": "f2", "source": "var zero
 check("run all", finished["f1"] == "ok" && finished["f2"] == "error" && finished["f3"] == "aborted" && textOf("f1") == "1" + NL,
     Serialization.Json(finished) + " " + dump("f1"));
 
+# 從頭執行（Run all 送出 fresh）：計數從 [1] 開始，歷史不重播（a 的 x 不見了）。 / A fresh run (Run all sends fresh):
+# counting starts at [1] and the history is not replayed (a's x is gone).
+var countOf = function(cell) {
+    var started = Array.Filter(Hash.Get(events, cell, []), e => e["kind"] == "started");
+    return if (len(started) == 0) { -1; } else { started[0]["params"]["count"]; };
+};
+var freshRun = async function() {
+    finished = {};
+    events = {};
+    await endpoint.Call("kernel/execute", {"path": "test.ipynb", "fresh": true, "cells": [{"id": "n1", "source": "var y = 1;"}, {"id": "n2", "source": "y + 1"}]});
+    await waitFor("n1");
+    await waitFor("n2");
+    return [countOf("n1"), countOf("n2")];
+};
+var firstCounts = await freshRun();
+var secondCounts = await freshRun();
+check("fresh counts", firstCounts[0] == 1 && firstCounts[1] == 2 && secondCounts[0] == 1 && secondCounts[1] == 2,
+    Serialization.Json([firstCounts, secondCounts]));
+await run([{"id": "n3", "source": "x"}]);
+check("fresh history", finished["n3"] == "error" && countOf("n3") == 3, dump("n3"));
+
 # 可更新的輸出與清除。 / Updatable outputs and clearing.
 await run([{"id": "g", "source": src(["Display.Show(Display.Progress(0, 10, " + Q + "work" + Q + "), " + Q + "p" + Q + ");",
     "Display.Update(" + Q + "p" + Q + ", Display.Progress(10, 10, " + Q + "work" + Q + "));", "Display.Clear();"])}]);
 var kindsOf = Array.Map(Hash.Get(events, "g", []), e => e["kind"]);
 check("update and clear", finished["g"] == "ok" && Array.Contains(kindsOf, "update") && Array.Contains(kindsOf, "clear"), Serialization.Json(kindsOf));
+
+# 過大的豐富輸出只留下一行說明（網頁不會因它用完記憶體），儲存格照常完成。 / A rich output too large leaves one line
+# (it cannot exhaust the page's memory) and the cell finishes as usual.
+await run([{"id": "big", "source": src(["var s = " + Q + "x" + Q + ";", "for (; len(s) < 33554432;) { s = s + s; }",
+    "Display.Show(Display.Text(s));", "print(" + Q + "after" + Q + ");"])}]);
+check("output limit", finished["big"] == "ok" && len(ofType("big", "display_data")) == 0 && String.Contains(textOf("big"), "too large to show") &&
+    String.EndsWith(textOf("big"), "after" + NL), dump("big"));
 
 # 中斷正在執行的儲存格。 / Interrupting a running cell.
 finished = {};

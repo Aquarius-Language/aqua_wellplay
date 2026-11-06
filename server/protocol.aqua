@@ -12,7 +12,7 @@ server pushes execution state and outputs as notifications (kernel/...).
   files/delete {path}                  → {ok}
   notebook/open {path}                 → {notebook, kernel: {state, count, queued, history, cells: {id: running | queued}, windows: [{cell, output}]}}
   notebook/save {path, notebook}       → {ok}
-  kernel/execute {path, cells: [{id, source}]}  → {queued}
+  kernel/execute {path, cells: [{id, source}], fresh}  → {queued}   fresh (Run all): no replay, counts from [1]
   examples/list                        → [{category, title, description, icon, path}]
   examples/copy {path, folder}         → {path}       a copy of the example in the workspace
   kernel/interrupt {path}, kernel/restart {path}, kernel/sessions
@@ -112,7 +112,7 @@ var Register = function(endpoint, services) {
         if (!workspace.Exists(path)) { return rpc.Error(-32012, "Save the notebook first / 請先儲存筆記本", null); }
         kernel.Subscribe(path, endpoint);
         var cells = Array.Map(params["cells"], c => ({"id": String.From(c["id"]), "source": String.From(Hash.Get(c, "source", ""))}));
-        return kernel.Execute(path, cells);
+        return kernel.Execute(path, cells, Hash.Get(params, "fresh", false) == true);
     });
     endpoint.Handle("kernel/interrupt", function(params) {
         var path = required(params, "path");

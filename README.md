@@ -28,6 +28,10 @@ It ships beside `aqua` in the AquariusLang package, so the package folder on `PA
   selection, clipboard, context menu).
 - **Running**: `Shift+Enter` (run and move on), `Ctrl+Enter` (run), `Alt+Enter` (run and insert), Run all, Stop
   (ends the process tree), Restart. Output streams while a cell runs; Run all stops at the first error, like Jupyter.
+  Run all starts the kernel over, so its execution counts begin at [1] each time (Jupyter's restart and run all).
+  A cell keeps at most 400,000 characters of text output, and a rich output larger than 32 MB of JSON (an image of
+  about 24 MB) is replaced by one line saying so; only the notebook on screen keeps its images decoded. These bounds
+  keep the page's memory (2 GiB at most) independent of how much cells print or how many notebooks are open.
   Shift+Enter on the last cell adds an empty one to type into next, which shows a hint ("Type code here") in place of
   a lone line number.
 - **Rich output**: a cell's last expression shows as `Out[n]`; `Display` (also `顯示`) shows Markdown, tables, line /

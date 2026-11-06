@@ -96,7 +96,7 @@ var MenuSpecs = function(app) {
             ["Run cell · 執行", "Ctrl+Enter", () => M.app.Run(app, doc, [selected]), has],
             ["Run cell and insert below · 執行並插入", "Alt+Enter", () => { M.app.Run(app, doc, [selected]); M.app.Insert(app, doc, selected + 1, "code"); }, has],
             "-",
-            ["Run all cells · 全部執行", "", () => M.app.Run(app, doc, M.app.RunAll(doc)), has],
+            ["Run all cells · 全部執行", "", () => M.app.Run(app, doc, M.app.RunAll(doc), true), has],
             ["Run all above · 執行上方全部", "", () => M.app.Run(app, doc, range(0, selected)), has],
             ["Run selected and below · 執行此格與下方", "", () => M.app.Run(app, doc, range(selected, len(cells))), has],
         ]],
@@ -157,7 +157,7 @@ var NotebookToolbar = function(app, doc, t) {
             Tool("text", "Text", () => M.app.Insert(app, doc, doc.selected + 1, "markdown"), null, "Insert a Markdown cell below · 插入文字儲存格"),
             UI.Box(style: {"width": 1, "height": 20, "background": t.border, "marginHorizontal": 4}),
             Tool("play", "Run", () => runSelected(app, doc, true), "primary", "Run the cell and select the next · 執行 (Shift+Enter)"),
-            Tool("fastForward", "Run all", () => M.app.Run(app, doc, M.app.RunAll(doc)), null, "Run every cell · 全部執行"),
+            Tool("fastForward", "Run all", () => M.app.Run(app, doc, M.app.RunAll(doc), true), null, "Run every cell · 全部執行"),
             Tool("stop", "", () => M.app.Interrupt(app, doc), "danger", "Interrupt · 中斷 (I, I)"),
             Tool("refresh", "", () => { app.dialog = {"kind": "restart"}; }, null, "Restart the kernel · 重新啟動核心 (0, 0)"),
             Tool("close", "", () => M.app.ClearOutputs(app, doc), null, "Clear all outputs · 清除所有輸出"),
@@ -476,9 +476,11 @@ var Dialog = function(app, t) {
 
 # ---- 根 / The root ----
 var Root = function(app) {
-    M.outputs.KeepImages(app.docs);
     var t = M.app.Palette(app);
     var doc = M.app.ActiveDoc(app);
+    # 只有顯示中的筆記本留著解碼過的圖片：開再多筆記本，圖片佔的記憶體也只有一本的量。 / Only the notebook on screen
+    # keeps decoded images: however many notebooks are open, images take one notebook's worth of memory.
+    M.outputs.KeepImages(if (doc == null) { []; } else { [doc]; });
     var specs = MenuSpecs(app);
     var page = if (app.active == -2) { Gallery(app, t); } elif (doc == null) { Launcher(app, t); }
         else { UI.Column(crossAxis: "stretch", style: {"flexGrow": 1, "minHeight": 0}, children: [NotebookToolbar(app, doc, t), Notebook(app, doc, t)]); };
